@@ -22,15 +22,6 @@ class DatasetMigrator(ResourceMigrator[Dataset]):
         """Human-readable name for this resource type."""
         return "Datasets"
 
-    @property
-    def excluded_fields_for_insert(self) -> set[str]:
-        """Fields to exclude when converting dataset records for API insertion.
-
-        Includes base excluded fields plus dataset_id since it's specified
-        in the API endpoint path when inserting dataset records.
-        """
-        return super().excluded_fields_for_insert | {"dataset_id"}
-
     async def list_source_resources(
         self, project_id: str | None = None
     ) -> list[Dataset]:
@@ -88,18 +79,11 @@ class DatasetMigrator(ResourceMigrator[Dataset]):
             project_id=resource.project_id,
         )
 
-        # Create dataset in destination
-        create_params = {
-            "name": resource.name,
-            "project_id": self.dest_project_id,  # Use destination project ID
-        }
+        # Create dataset in destination using base class serialization
+        create_params = self.serialize_resource_for_insert(resource)
 
-        # Copy optional fields if they exist
-        if hasattr(resource, "description") and resource.description:
-            create_params["description"] = resource.description
-
-        if hasattr(resource, "metadata") and resource.metadata:
-            create_params["metadata"] = resource.metadata
+        # Override the project_id to use destination project
+        create_params["project_id"] = self.dest_project_id
 
         dest_dataset = await self.dest_client.with_retry(
             "create_dataset",

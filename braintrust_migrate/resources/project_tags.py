@@ -14,7 +14,7 @@ class ProjectTagMigrator(ResourceMigrator[ProjectTag]):
     @property
     def resource_name(self) -> str:
         """Return the name of this resource type."""
-        return "project_tags"
+        return "ProjectTags"
 
     async def list_source_resources(
         self, project_id: str | None = None
@@ -80,16 +80,10 @@ class ProjectTagMigrator(ResourceMigrator[ProjectTag]):
 
         try:
             # Create the project tag in the destination
-            create_data = {
-                "project_id": dest_project_id,
-                "name": resource.name,
-            }
+            create_data = self.serialize_resource_for_insert(resource)
 
-            # Add optional fields if they exist
-            if resource.description is not None:
-                create_data["description"] = resource.description
-            if resource.color is not None:
-                create_data["color"] = resource.color
+            # Override the project_id with the destination project ID
+            create_data["project_id"] = dest_project_id
 
             logger.info(
                 "Creating project tag in destination",

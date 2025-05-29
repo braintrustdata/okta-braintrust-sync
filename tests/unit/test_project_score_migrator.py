@@ -363,14 +363,18 @@ class TestProjectScoreMigrator:
     ):
         """Test resolving function reference of type 'function'."""
         function_ref = {"type": "function", "id": "function-123"}
-        result = await project_score_migrator._resolve_function_reference(function_ref)
+        result = project_score_migrator._resolve_function_reference_generic(
+            function_ref
+        )
         assert result == {"type": "function", "id": "dest-function-456"}
 
     @pytest.mark.asyncio
     async def test_resolve_function_reference_global_type(self, project_score_migrator):
         """Test resolving function reference of type 'global'."""
         function_ref = {"type": "global", "name": "global_scorer"}
-        result = await project_score_migrator._resolve_function_reference(function_ref)
+        result = project_score_migrator._resolve_function_reference_generic(
+            function_ref
+        )
         assert result == {"type": "global", "name": "global_scorer"}
 
     @pytest.mark.asyncio
@@ -379,7 +383,9 @@ class TestProjectScoreMigrator:
     ):
         """Test resolving function reference with unmapped function ID."""
         function_ref = {"type": "function", "id": "unmapped-function"}
-        result = await project_score_migrator._resolve_function_reference(function_ref)
+        result = project_score_migrator._resolve_function_reference_generic(
+            function_ref
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -388,13 +394,15 @@ class TestProjectScoreMigrator:
     ):
         """Test resolving function reference with unknown type."""
         function_ref = {"type": "unknown", "id": "some-id"}
-        result = await project_score_migrator._resolve_function_reference(function_ref)
+        result = project_score_migrator._resolve_function_reference_generic(
+            function_ref
+        )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_resolve_function_reference_none(self, project_score_migrator):
         """Test resolving None function reference."""
-        result = await project_score_migrator._resolve_function_reference(None)
+        result = project_score_migrator._resolve_function_reference_generic(None)
         assert result is None
 
     @pytest.mark.asyncio

@@ -162,6 +162,54 @@ class Config(BaseModel):
             state_dir=state_dir,
         )
 
+    @classmethod
+    def from_file(cls, config_path: Path) -> "Config":
+        """Create configuration from a YAML or JSON file.
+
+        Args:
+            config_path: Path to the configuration file
+
+        Returns:
+            Config instance populated from the file
+
+        Raises:
+            ValueError: If the file format is unsupported or required fields are missing
+            FileNotFoundError: If the configuration file doesn't exist
+        """
+        import json
+
+        if not config_path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+        file_extension = config_path.suffix.lower()
+
+        try:
+            if file_extension == ".json":
+                with open(config_path) as f:
+                    config_data = json.load(f)
+            elif file_extension in [".yaml", ".yml"]:
+                try:
+                    import yaml
+                except ImportError:
+                    raise ValueError(
+                        "PyYAML is required to load YAML configuration files. Install with: pip install PyYAML"
+                    ) from None
+
+                with open(config_path) as f:
+                    config_data = yaml.safe_load(f)
+            else:
+                raise ValueError(
+                    f"Unsupported configuration file format: {file_extension}. Supported formats: .json, .yaml, .yml"
+                )
+
+            # Validate and create Config instance
+            return cls(**config_data)
+
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in configuration file: {e}") from e
+        except Exception as e:
+            raise ValueError(f"Failed to load configuration file: {e}") from e
+
     def get_checkpoint_dir(self, project_name: str | None = None) -> Path:
         """Get the checkpoint directory for a specific project or general use.
 

@@ -14,7 +14,7 @@ class ProjectScoreMigrator(ResourceMigrator[ProjectScore]):
     @property
     def resource_name(self) -> str:
         """Return the name of this resource type."""
-        return "project_scores"
+        return "ProjectScores"
 
     async def list_source_resources(
         self, project_id: str | None = None
@@ -106,19 +106,13 @@ class ProjectScoreMigrator(ResourceMigrator[ProjectScore]):
 
         try:
             # Create the project score in the destination
-            create_data = {
-                "project_id": dest_project_id,
-                "name": resource.name,
-                "score_type": resource.score_type,
-            }
+            create_data = self.serialize_resource_for_insert(resource)
 
-            # Add optional fields if they exist
-            if resource.description is not None:
-                create_data["description"] = resource.description
-            if resource.categories is not None:
-                create_data["categories"] = resource.categories
+            # Override the project_id with the destination project ID
+            create_data["project_id"] = dest_project_id
+
+            # Handle config with potential function dependencies
             if resource.config is not None:
-                # Handle config with potential function dependencies
                 config = await self._resolve_config_dependencies(resource.config)
                 create_data["config"] = config
 
@@ -160,29 +154,20 @@ class ProjectScoreMigrator(ResourceMigrator[ProjectScore]):
         if not config:
             return config
 
-        # Convert to dict if it's not already
-        if hasattr(config, "__dict__"):
-            config_dict = config.__dict__.copy()
-        elif hasattr(config, "model_dump"):
-            config_dict = config.model_dump()
-        else:
-            config_dict = dict(config) if config else {}
+        # Convert to dict using base class utility
+        config_dict = self._to_dict_safe(config)
 
         # Handle online scoring config
         if config_dict.get("online"):
             online_config = config_dict["online"]
-            if hasattr(online_config, "__dict__"):
-                online_dict = online_config.__dict__.copy()
-            elif hasattr(online_config, "model_dump"):
-                online_dict = online_config.model_dump()
-            else:
-                online_dict = dict(online_config)
+            # Convert online config to dict too
+            online_dict = self._to_dict_safe(online_config)
 
             # Resolve scorer function dependencies
             if online_dict.get("scorers"):
                 resolved_scorers = []
                 for scorer in online_dict["scorers"]:
-                    resolved_scorer = await self._resolve_function_reference(scorer)
+                    resolved_scorer = self._resolve_function_reference_generic(scorer)
                     if resolved_scorer:
                         resolved_scorers.append(resolved_scorer)
                     else:
@@ -194,47 +179,6 @@ class ProjectScoreMigrator(ResourceMigrator[ProjectScore]):
                 config_dict["online"] = online_dict
 
         return config_dict
-
-    async def _resolve_function_reference(self, function_ref) -> dict | None:
-        """Resolve a function reference to destination function ID.
-
-        Args:
-            function_ref: SavedFunctionId reference
-
-        Returns:
-            Resolved function reference or None if resolution failed
-        """
-        if not function_ref:
-            return None
-
-        # Handle different function reference types
-        if hasattr(function_ref, "__dict__"):
-            ref_dict = function_ref.__dict__.copy()
-        elif hasattr(function_ref, "model_dump"):
-            ref_dict = function_ref.model_dump()
-        else:
-            ref_dict = dict(function_ref)
-
-        # Handle function ID type reference
-        if ref_dict.get("type") == "function" and "id" in ref_dict:
-            source_function_id = ref_dict["id"]
-            dest_function_id = self.state.id_mapping.get(source_function_id)
-            if dest_function_id:
-                return {"type": "function", "id": dest_function_id}
-            else:
-                logger.warning(
-                    "No destination mapping found for function",
-                    source_function_id=source_function_id,
-                )
-                return None
-
-        # Handle global function type reference (no ID mapping needed)
-        elif ref_dict.get("type") == "global" and "name" in ref_dict:
-            return ref_dict
-
-        else:
-            logger.warning("Unknown function reference type", function_ref=ref_dict)
-            return None
 
     async def get_dependencies(self, resource: ProjectScore) -> list[str]:
         """Get the dependencies for a project score.

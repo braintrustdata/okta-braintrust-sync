@@ -10,18 +10,33 @@ from braintrust_migrate.resources.acls import ACLMigrator
 
 @pytest.fixture
 def acl_with_user():
-    """Create an ACL with user_id (should be skipped)."""
+    """Create an ACL with user_id."""
     acl = Mock(spec=ACL)
     acl.id = "acl-user-123"
     acl.object_type = "project"
     acl.object_id = "project-456"
-    acl.user_id = "user-789"
+    acl.user_id = "user-123"
     acl.group_id = None
     acl.permission = "read"
     acl.role_id = None
     acl.restrict_object_type = None
     acl.object_org_id = "org-456"
     acl.created = "2024-01-01T00:00:00Z"
+
+    # Mock the to_dict method
+    acl.to_dict.return_value = {
+        "id": "acl-user-123",
+        "object_type": "project",
+        "object_id": "project-456",
+        "user_id": "user-123",
+        "group_id": None,
+        "permission": "read",
+        "role_id": None,
+        "restrict_object_type": None,
+        "object_org_id": "org-456",
+        "created": "2024-01-01T00:00:00Z",
+    }
+
     return acl
 
 
@@ -36,9 +51,24 @@ def acl_with_role():
     acl.group_id = "group-789"
     acl.permission = None
     acl.role_id = "role-123"
-    acl.restrict_object_type = "experiment"
+    acl.restrict_object_type = None
     acl.object_org_id = "org-456"
     acl.created = "2024-01-01T00:00:00Z"
+
+    # Mock the to_dict method
+    acl.to_dict.return_value = {
+        "id": "acl-role-123",
+        "object_type": "project",
+        "object_id": "project-456",
+        "user_id": None,
+        "group_id": "group-789",
+        "permission": None,
+        "role_id": "role-123",
+        "restrict_object_type": None,
+        "object_org_id": "org-456",
+        "created": "2024-01-01T00:00:00Z",
+    }
+
     return acl
 
 
@@ -56,6 +86,21 @@ def acl_with_permission():
     acl.restrict_object_type = None
     acl.object_org_id = "org-456"
     acl.created = "2024-01-01T00:00:00Z"
+
+    # Mock the to_dict method
+    acl.to_dict.return_value = {
+        "id": "acl-permission-123",
+        "object_type": "dataset",
+        "object_id": "dataset-456",
+        "user_id": None,
+        "group_id": "group-789",
+        "permission": "update",
+        "role_id": None,
+        "restrict_object_type": None,
+        "object_org_id": "org-456",
+        "created": "2024-01-01T00:00:00Z",
+    }
+
     return acl
 
 

@@ -21,6 +21,19 @@ def group_with_inheritance():
     group.deleted_at = None
     group.member_groups = ["group-parent-1", "group-parent-2"]
     group.member_users = ["user-123", "user-456"]
+
+    # Mock the to_dict method to return a proper dictionary
+    group.to_dict.return_value = {
+        "id": "group-child-123",
+        "name": "Child Group",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A group that inherits from parent groups",
+        "deleted_at": None,
+        "member_groups": ["group-parent-1", "group-parent-2"],
+        "member_users": ["user-123", "user-456"],
+    }
     return group
 
 
@@ -37,6 +50,19 @@ def group_without_inheritance():
     group.deleted_at = None
     group.member_groups = None
     group.member_users = ["user-123"]
+
+    # Mock the to_dict method to return a proper dictionary
+    group.to_dict.return_value = {
+        "id": "group-independent-456",
+        "name": "Independent Group",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A group without inheritance",
+        "deleted_at": None,
+        "member_groups": None,
+        "member_users": ["user-123"],
+    }
     return group
 
 
@@ -314,6 +340,15 @@ class TestGroupMigrator:
         minimal_group.description = None
         minimal_group.member_groups = None
         minimal_group.member_users = None
+
+        # Mock the to_dict method to return a proper dictionary
+        minimal_group.to_dict.return_value = {
+            "id": "group-minimal-123",
+            "name": "Minimal Group",
+            "description": None,
+            "member_groups": None,
+            "member_users": None,
+        }
 
         # Mock successful group creation
         created_group = Mock(spec=Group)

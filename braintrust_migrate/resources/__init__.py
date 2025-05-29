@@ -1,7 +1,6 @@
 """Resource migration modules."""
 
 from .acls import ACLMigrator
-from .agents import AgentMigrator
 from .ai_secrets import AISecretMigrator
 from .datasets import DatasetMigrator
 from .experiments import ExperimentMigrator
@@ -18,7 +17,6 @@ from .views import ViewMigrator
 __all__ = [
     "ACLMigrator",
     "AISecretMigrator",
-    "AgentMigrator",
     "DatasetMigrator",
     "ExperimentMigrator",
     "FunctionMigrator",

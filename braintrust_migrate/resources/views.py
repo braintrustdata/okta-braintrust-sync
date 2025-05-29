@@ -55,8 +55,7 @@ class ViewMigrator(ResourceMigrator[View]):
     async def list_source_resources(self, project_id: str | None = None) -> list[View]:
         """List all views from the source organization.
 
-        Since the Views API requires object_id and object_type parameters,
-        we need to discover views by querying for each known object.
+        Uses OpenAPI parameter mapping to efficiently discover views.
 
         Args:
             project_id: Optional project ID to filter views.
@@ -65,157 +64,30 @@ class ViewMigrator(ResourceMigrator[View]):
             List of views from the source organization.
         """
         try:
-            all_views = []
+            # Use OpenAPI parameter mapping for efficient discovery
+            # The views API supports object_type and object_id parameters
+            params = {}
+            if project_id:
+                # When filtering by project, use the object_id parameter
+                params["object_id"] = project_id
+                params["object_type"] = "project"
 
-            # Define object types we want to discover views for
-            object_types_to_check = ["project", "experiment", "dataset"]
-
-            for object_type in object_types_to_check:
-                try:
-                    # Get object IDs to check based on type
-                    object_ids = await self._get_object_ids_for_type(
-                        object_type, project_id
-                    )
-
-                    # Query views for each object
-                    for object_id in object_ids:
-                        try:
-                            views_response = await self.source_client.with_retry(
-                                f"list_views_{object_type}_{object_id}",
-                                lambda object_id=object_id,
-                                object_type=object_type: self.source_client.client.views.list(
-                                    object_id=object_id, object_type=object_type
-                                ),
-                            )
-
-                            # Convert response to list and add to results
-                            views = await self._handle_api_response_to_list(
-                                views_response
-                            )
-                            all_views.extend(views)
-
-                            if views:
-                                self._logger.debug(
-                                    f"Found {len(views)} views for {object_type}",
-                                    object_type=object_type,
-                                    object_id=object_id,
-                                    view_count=len(views),
-                                )
-
-                        except Exception as e:
-                            # Log but continue - some objects might not have views
-                            self._logger.debug(
-                                f"No views found for {object_type} {object_id}",
-                                object_type=object_type,
-                                object_id=object_id,
-                                error=str(e),
-                            )
-                            continue
-
-                except Exception as e:
-                    self._logger.warning(
-                        f"Failed to get {object_type} IDs for view discovery",
-                        object_type=object_type,
-                        error=str(e),
-                    )
-                    continue
-
-            # Remove duplicates (same view might be found multiple times)
-            unique_views = self._deduplicate_views(all_views)
+            # Use base class helper method for efficient API calls
+            views = await self._list_resources_with_client(
+                self.source_client, "views", additional_params=params
+            )
 
             self._logger.info(
-                f"Discovered {len(unique_views)} unique views across all objects",
-                total_views=len(unique_views),
+                f"Discovered {len(views)} views",
+                total_views=len(views),
                 project_id=project_id,
             )
 
-            return unique_views
+            return views
 
         except Exception as e:
             self._logger.error("Failed to list source views", error=str(e))
             raise
-
-    async def _get_object_ids_for_type(
-        self, object_type: str, project_id: str | None = None
-    ) -> list[str]:
-        """Get all object IDs for a given object type.
-
-        Args:
-            object_type: Type of object ("project", "experiment", "dataset")
-            project_id: Optional project ID to filter by
-
-        Returns:
-            List of object IDs for the given type
-        """
-        try:
-            object_ids = []
-
-            if object_type == "project":
-                # Get all projects (or just the current one if project_id is specified)
-                if project_id:
-                    object_ids = [project_id]
-                else:
-                    # List all projects
-                    projects_response = await self.source_client.with_retry(
-                        "list_projects_for_views",
-                        lambda: self.source_client.client.projects.list(),
-                    )
-                    projects = await self._handle_api_response_to_list(
-                        projects_response
-                    )
-                    object_ids = [project.id for project in projects]
-
-            elif object_type in ["experiment", "dataset"] and project_id:
-                # Get experiments or datasets for the project
-                resource_type = f"{object_type}s"  # "experiments" or "datasets"
-                response = await self.source_client.with_retry(
-                    f"list_{resource_type}_for_views",
-                    lambda: getattr(self.source_client.client, resource_type).list(
-                        project_id=project_id
-                    ),
-                )
-                resources = await self._handle_api_response_to_list(response)
-                object_ids = [resource.id for resource in resources]
-
-            elif object_type in ["experiment", "dataset"] and not project_id:
-                # If no project_id, we can't list experiments/datasets efficiently
-                object_ids = []
-
-            else:
-                self._logger.warning(
-                    f"Unknown object type for view discovery: {object_type}"
-                )
-                object_ids = []
-
-            return object_ids
-
-        except Exception as e:
-            self._logger.warning(
-                f"Failed to get {object_type} IDs",
-                object_type=object_type,
-                project_id=project_id,
-                error=str(e),
-            )
-            return []
-
-    def _deduplicate_views(self, views: list[View]) -> list[View]:
-        """Remove duplicate views from the list.
-
-        Args:
-            views: List of views that may contain duplicates
-
-        Returns:
-            List of unique views
-        """
-        seen_ids = set()
-        unique_views = []
-
-        for view in views:
-            if view.id not in seen_ids:
-                seen_ids.add(view.id)
-                unique_views.append(view)
-
-        return unique_views
 
     async def resource_exists_in_dest(self, resource: View) -> str | None:
         """Check if a view already exists in the destination.
@@ -309,48 +181,6 @@ class ViewMigrator(ResourceMigrator[View]):
             )
             return source_object_id
 
-    def _filter_view_options(self, options) -> dict | None:
-        """Filter out unsupported fields from view options.
-
-        Args:
-            options: Original view options
-
-        Returns:
-            Filtered options dict or None if no valid options remain
-        """
-        if not options:
-            return None
-
-        # Convert to dict if needed
-        if hasattr(options, "__dict__"):
-            options_dict = options.__dict__.copy()
-        elif hasattr(options, "model_dump"):
-            options_dict = options.model_dump()
-        else:
-            options_dict = dict(options) if options else {}
-
-        # List of fields that are known to be unsupported by the destination API
-        unsupported_fields = {"column_order"}
-
-        # Filter out unsupported fields
-        filtered_options = {
-            key: value
-            for key, value in options_dict.items()
-            if key not in unsupported_fields
-        }
-
-        if filtered_options:
-            self._logger.debug(
-                "Filtered view options",
-                original_keys=list(options_dict.keys()),
-                filtered_keys=list(filtered_options.keys()),
-                removed_keys=list(
-                    set(options_dict.keys()) - set(filtered_options.keys())
-                ),
-            )
-
-        return filtered_options if filtered_options else None
-
     async def migrate_resource(self, resource: View) -> str:
         """Migrate a single view to the destination.
 
@@ -364,25 +194,10 @@ class ViewMigrator(ResourceMigrator[View]):
             # Resolve the destination object_id
             dest_object_id = self._resolve_object_id(resource)
 
-            view_data = {
-                "object_type": resource.object_type,
-                "object_id": dest_object_id,
-                "view_type": resource.view_type,
-                "name": resource.name,
-            }
+            view_data = self.serialize_resource_for_insert(resource)
 
-            # Add optional fields if they exist
-            if hasattr(resource, "view_data") and resource.view_data is not None:
-                view_data["view_data"] = resource.view_data
-
-            if hasattr(resource, "options") and resource.options is not None:
-                # Filter out unsupported fields from options
-                filtered_options = self._filter_view_options(resource.options)
-                if filtered_options:
-                    view_data["options"] = filtered_options
-
-            if hasattr(resource, "user_id") and resource.user_id is not None:
-                view_data["user_id"] = resource.user_id
+            # Override the object_id with the resolved destination object_id
+            view_data["object_id"] = dest_object_id
 
             # Create the view in the destination
             new_view = await self.dest_client.with_retry(

@@ -54,6 +54,21 @@ def prompt_with_function_dependency():
     prompt_data.origin = None
     prompt.prompt_data = prompt_data
 
+    # Mock the to_dict method to return a proper dictionary
+    prompt.to_dict.return_value = {
+        "id": "prompt-123",
+        "name": "Test Prompt with Function",
+        "slug": "test-prompt-function",
+        "project_id": "project-456",
+        "description": "A test prompt with function dependency",
+        "tags": ["test"],
+        "function_type": "llm",
+        "prompt_data": {
+            "tool_functions": [{"type": "function", "id": "function-789"}],
+            "origin": None,
+        },
+    }
+
     return prompt
 
 
@@ -79,6 +94,25 @@ def prompt_with_prompt_dependency():
     prompt_data.origin = origin
     prompt.prompt_data = prompt_data
 
+    # Mock the to_dict method to return a proper dictionary
+    prompt.to_dict.return_value = {
+        "id": "prompt-456",
+        "name": "Derived Prompt",
+        "slug": "derived-prompt",
+        "project_id": "project-456",
+        "description": "A prompt derived from another",
+        "tags": ["derived"],
+        "function_type": "llm",
+        "prompt_data": {
+            "tool_functions": None,
+            "origin": {
+                "prompt_id": "prompt-base-123",
+                "project_id": "project-456",
+                "prompt_version": "v1",
+            },
+        },
+    }
+
     return prompt
 
 
@@ -99,6 +133,21 @@ def prompt_without_dependencies():
     prompt_data.tool_functions = None
     prompt_data.origin = None
     prompt.prompt_data = prompt_data
+
+    # Mock the to_dict method to return a proper dictionary
+    prompt.to_dict.return_value = {
+        "id": "prompt-789",
+        "name": "Independent Prompt",
+        "slug": "independent-prompt",
+        "project_id": "project-456",
+        "description": "A prompt without dependencies",
+        "tags": ["independent"],
+        "function_type": "llm",
+        "prompt_data": {
+            "tool_functions": None,
+            "origin": None,
+        },
+    }
 
     return prompt
 

@@ -109,14 +109,8 @@ class GroupMigrator(ResourceMigrator[Group]):
             org_id=getattr(resource, "org_id", None),
         )
 
-        # Create group in destination
-        create_params = {
-            "name": resource.name,
-        }
-
-        # Copy optional fields if they exist
-        if hasattr(resource, "description") and resource.description:
-            create_params["description"] = resource.description
+        # Create group in destination using base class serialization
+        create_params = self.serialize_resource_for_insert(resource)
 
         # Handle member_groups with dependency resolution
         if hasattr(resource, "member_groups") and resource.member_groups:
@@ -152,6 +146,8 @@ class GroupMigrator(ResourceMigrator[Group]):
                 group_name=resource.name,
                 user_count=len(resource.member_users),
             )
+            # Remove member_users from create_params to avoid trying to migrate them
+            create_params.pop("member_users", None)
 
         dest_group = await self.dest_client.with_retry(
             "create_group",

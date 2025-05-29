@@ -39,6 +39,19 @@ def sample_view_for_migrator():
     view.view_data = {"search": {"filter": []}}
     view.options = {"columnVisibility": {"name": True}}
     view.user_id = "user-789"
+
+    # Mock the to_dict method to return a proper dictionary
+    view.to_dict.return_value = {
+        "id": "view-123",
+        "name": "Test View",
+        "object_type": "project",
+        "object_id": "project-456",
+        "view_type": "datasets",
+        "view_data": {"search": {"filter": []}},
+        "options": {"columnVisibility": {"name": True}},
+        "user_id": "user-789",
+    }
+
     return view
 
 
@@ -82,44 +95,23 @@ class TestViewMigrator:
         temp_checkpoint_dir,
         sample_view_for_migrator,
     ):
-        """Test successful discovery of source views by querying objects."""
-        # Mock the projects list response
-        mock_projects_response = Mock()
-        mock_projects_response.objects = [Mock(id="project-456")]
-
-        # Mock the views list response
+        """Test successful discovery of source views using simplified approach."""
+        # Mock the views list response directly (simplified approach)
         mock_views_response = Mock()
         mock_views_response.objects = [sample_view_for_migrator]
 
-        # Mock the experiments and datasets responses (empty)
-        mock_empty_response = Mock()
-        mock_empty_response.objects = []
-
-        # Set up the mock to return different responses based on the operation
-        def mock_with_retry_side_effect(operation_name, coro_func):
-            if "list_projects_for_views" in operation_name:
-                return mock_projects_response
-            elif "list_views_project" in operation_name:
-                return mock_views_response
-            elif "list_experiments_for_views" in operation_name:
-                return mock_empty_response
-            elif "list_datasets_for_views" in operation_name:
-                return mock_empty_response
-            else:
-                return mock_empty_response
-
-        mock_source_client.with_retry.side_effect = mock_with_retry_side_effect
+        # Use direct mock return for the simplified API call
+        mock_source_client.with_retry.return_value = mock_views_response
 
         migrator = ViewMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
         )
         views = await migrator.list_source_resources()
 
-        # Should find the view through object discovery
+        # Should find the view through direct API call
         assert len(views) == 1
         assert views[0] == sample_view_for_migrator
-        # with_retry should be called multiple times for discovery
-        assert mock_source_client.with_retry.call_count >= 1
+        mock_source_client.with_retry.assert_called_once()
 
     async def test_list_source_resources_with_project_id(
         self,
@@ -128,22 +120,12 @@ class TestViewMigrator:
         temp_checkpoint_dir,
         sample_view_for_migrator,
     ):
-        """Test discovering source views with specific project ID."""
+        """Test discovering source views with specific project ID using simplified approach."""
         # Mock the views list response for the specific project
         mock_views_response = Mock()
         mock_views_response.objects = [sample_view_for_migrator]
 
-        # Mock empty responses for experiments and datasets
-        mock_empty_response = Mock()
-        mock_empty_response.objects = []
-
-        def mock_with_retry_side_effect(operation_name, coro_func):
-            if "list_views_project" in operation_name:
-                return mock_views_response
-            else:
-                return mock_empty_response
-
-        mock_source_client.with_retry.side_effect = mock_with_retry_side_effect
+        mock_source_client.with_retry.return_value = mock_views_response
 
         migrator = ViewMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
@@ -153,8 +135,7 @@ class TestViewMigrator:
         # Should find the view for the specific project
         assert len(views) == 1
         assert views[0] == sample_view_for_migrator
-        # with_retry should be called for discovery
-        assert mock_source_client.with_retry.call_count >= 1
+        mock_source_client.with_retry.assert_called_once()
 
     async def test_resource_exists_in_dest_found(
         self,

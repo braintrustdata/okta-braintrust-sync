@@ -11,8 +11,6 @@ from braintrust_api.types import Project
 from braintrust_migrate.client import BraintrustClient, create_client_pair
 from braintrust_migrate.config import Config
 from braintrust_migrate.resources import (
-    AgentMigrator,
-    AISecretMigrator,
     DatasetMigrator,
     ExperimentMigrator,
     FunctionMigrator,
@@ -45,7 +43,7 @@ class MigrationOrchestrator:
 
     # Organization-scoped resources (migrated once, globally)
     ORGANIZATION_SCOPED_RESOURCES: ClassVar[list[tuple[str, type]]] = [
-        ("ai_secrets", AISecretMigrator),  # AI provider credentials - no dependencies
+        # ("ai_secrets", AISecretMigrator),  # AI provider credentials - no dependencies
         ("roles", RoleMigrator),  # Organization roles - may be referenced by ACLs
         ("groups", GroupMigrator),  # Organization groups - may be referenced by ACLs
     ]
@@ -72,7 +70,6 @@ class MigrationOrchestrator:
             "prompts_final",
             PromptMigrator,
         ),  # Second pass: prompts with function dependencies
-        ("agents", AgentMigrator),
         ("experiments", ExperimentMigrator),
         ("logs", LogsMigrator),
         ("views", ViewMigrator),

@@ -22,7 +22,7 @@ class SpanIframeMigrator(ResourceMigrator[SpanIFrame]):
     @property
     def resource_name(self) -> str:
         """Human-readable name for this resource type."""
-        return "SpanIframes"
+        return "SpanIFrames"
 
     async def list_source_resources(
         self, project_id: str | None = None
@@ -82,19 +82,11 @@ class SpanIframeMigrator(ResourceMigrator[SpanIFrame]):
             project_id=resource.project_id,
         )
 
-        # Create span iframe in destination
-        create_params = {
-            "name": resource.name,
-            "project_id": self.dest_project_id,  # Use destination project ID
-            "url": resource.url,
-        }
+        # Create span iframe in destination using base class serialization
+        create_params = self.serialize_resource_for_insert(resource)
 
-        # Copy optional fields if they exist
-        if hasattr(resource, "description") and resource.description:
-            create_params["description"] = resource.description
-
-        if hasattr(resource, "post_message") and resource.post_message is not None:
-            create_params["post_message"] = resource.post_message
+        # Override the project_id to use destination project
+        create_params["project_id"] = self.dest_project_id
 
         dest_span_iframe = await self.dest_client.with_retry(
             "create_span_iframe",

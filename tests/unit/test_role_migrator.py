@@ -21,6 +21,20 @@ def role_with_inheritance():
     role.deleted_at = None
     role.member_permissions = [{"permission": "read", "restrict_object_type": None}]
     role.member_roles = ["role-parent-1", "role-parent-2"]
+
+    # Mock the to_dict method
+    role.to_dict.return_value = {
+        "id": "role-child-123",
+        "name": "Child Role",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A role that inherits from parent roles",
+        "deleted_at": None,
+        "member_permissions": [{"permission": "read", "restrict_object_type": None}],
+        "member_roles": ["role-parent-1", "role-parent-2"],
+    }
+
     return role
 
 
@@ -40,6 +54,23 @@ def role_without_inheritance():
         {"permission": "update", "restrict_object_type": "experiment"},
     ]
     role.member_roles = None
+
+    # Mock the to_dict method
+    role.to_dict.return_value = {
+        "id": "role-independent-456",
+        "name": "Independent Role",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A role without inheritance",
+        "deleted_at": None,
+        "member_permissions": [
+            {"permission": "create", "restrict_object_type": "project"},
+            {"permission": "update", "restrict_object_type": "experiment"},
+        ],
+        "member_roles": None,
+    }
+
     return role
 
 
@@ -317,6 +348,15 @@ class TestRoleMigrator:
         minimal_role.description = None
         minimal_role.member_permissions = None
         minimal_role.member_roles = None
+
+        # Mock the to_dict method
+        minimal_role.to_dict.return_value = {
+            "id": "role-minimal-123",
+            "name": "Minimal Role",
+            "description": None,
+            "member_permissions": None,
+            "member_roles": None,
+        }
 
         # Mock successful role creation
         created_role = Mock(spec=Role)

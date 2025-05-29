@@ -10,6 +10,7 @@ from typing import Any, Generic, TypeVar
 import structlog
 
 from braintrust_migrate.client import BraintrustClient
+from braintrust_migrate.openapi_utils import get_resource_create_fields
 
 logger = structlog.get_logger(__name__)
 
@@ -157,49 +158,125 @@ class ResourceMigrator(ABC, Generic[T]):
             self._logger.error("Failed to save migration state", error=str(e))
 
     def _compute_checksum(self, data: Any) -> str:
-        """Compute checksum for resource data to detect changes.
+        """Compute SHA-256 checksum of data for change detection.
 
         Args:
-            data: Resource data to compute checksum for.
+            data: Data to compute checksum for.
 
         Returns:
-            SHA-256 checksum of the resource data.
+            Hex string of SHA-256 checksum.
         """
-        # Convert resource object to a serializable dictionary
-        if hasattr(data, "__dict__"):
-            # Handle pydantic models and dataclass objects
-            if hasattr(data, "model_dump"):
-                # Pydantic v2 model
-                serializable_data = data.model_dump()
-            elif hasattr(data, "dict"):
-                # Pydantic v1 model
-                serializable_data = data.dict()
-            else:
-                # Generic object with __dict__
-                serializable_data = {
-                    k: v
-                    for k, v in data.__dict__.items()
-                    if not k.startswith("_") and not callable(v)
-                }
+        if data is None:
+            serialized = ""
+        elif isinstance(data, dict | list | tuple):
+            # Use deterministic JSON serialization
+            serialized = json.dumps(data, sort_keys=True, default=str)
+        elif hasattr(data, "to_dict") and callable(data.to_dict):
+            # Handle Braintrust resources
+            try:
+                dict_data = data.to_dict(exclude_unset=True, exclude_none=True)
+                serialized = json.dumps(dict_data, sort_keys=True, default=str)
+            except Exception:
+                # Fallback to string representation
+                serialized = str(data)
         else:
-            # Primitive types or already serializable
-            serializable_data = data
+            # Convert to string
+            serialized = str(data)
 
-        # Convert to JSON string with sorted keys for consistent hashing
+        # Compute hash
+        return hashlib.sha256(serialized.encode()).hexdigest()
+
+    def _to_dict_safe(self, obj: Any) -> dict:
+        """Safely convert any object to dictionary using common patterns.
+
+        This utility method handles the common object-to-dict conversion patterns
+        used throughout the migration system.
+
+        Args:
+            obj: Object to convert to dictionary
+
+        Returns:
+            Dictionary representation of the object
+
+        Raises:
+            ValueError: If the object cannot be converted to a dictionary
+        """
+        if obj is None:
+            return {}
+
+        # Handle objects with __dict__ attribute
+        if hasattr(obj, "__dict__"):
+            return obj.__dict__.copy()
+
+        # Handle Pydantic/BaseModel objects with model_dump
+        if hasattr(obj, "model_dump") and callable(obj.model_dump):
+            return obj.model_dump()
+
+        # Handle Braintrust objects with to_dict
+        if hasattr(obj, "to_dict") and callable(obj.to_dict):
+            return obj.to_dict()
+
+        # Handle dict-like objects
+        if isinstance(obj, dict):
+            return obj.copy()
+
+        # Try to convert to dict
         try:
-            json_str = json.dumps(
-                serializable_data, sort_keys=True, separators=(",", ":"), default=str
-            )
+            return dict(obj)
         except (TypeError, ValueError) as e:
-            # Fallback: convert to string representation
-            self._logger.warning(
-                "Failed to serialize data for checksum, using string representation",
-                error=str(e),
-                data_type=type(data).__name__,
-            )
-            json_str = str(serializable_data)
+            raise ValueError(
+                f"Cannot convert {type(obj).__name__} to dictionary"
+            ) from e
 
-        return hashlib.sha256(json_str.encode()).hexdigest()
+    def _resolve_function_reference_generic(self, function_ref: Any) -> dict | None:
+        """Generic function reference resolver used across multiple migrators.
+
+        This consolidates the common pattern of resolving function references
+        from source IDs to destination IDs.
+
+        Args:
+            function_ref: Function reference object to resolve
+
+        Returns:
+            Resolved function reference dict or None if resolution failed
+        """
+        if not function_ref:
+            return None
+
+        try:
+            # Convert to dict using our safe utility
+            ref_dict = self._to_dict_safe(function_ref)
+
+            # Handle function ID type reference
+            if ref_dict.get("type") == "function" and "id" in ref_dict:
+                source_function_id = ref_dict["id"]
+                dest_function_id = self.state.id_mapping.get(source_function_id)
+                if dest_function_id:
+                    return {"type": "function", "id": dest_function_id}
+                else:
+                    self._logger.warning(
+                        "No destination mapping found for function",
+                        source_function_id=source_function_id,
+                    )
+                    return None
+
+            # Handle global function type reference (no ID mapping needed)
+            elif ref_dict.get("type") == "global" and "name" in ref_dict:
+                return ref_dict
+
+            else:
+                self._logger.warning(
+                    "Unknown function reference type", function_ref=ref_dict
+                )
+                return None
+
+        except Exception as e:
+            self._logger.warning(
+                "Failed to resolve function reference",
+                error=str(e),
+                function_ref=str(function_ref),
+            )
+            return None
 
     def should_skip_resource(self, source_id: str, current_data: Any) -> bool:
         """Check if a resource should be skipped based on existing state.
@@ -797,32 +874,23 @@ class ResourceMigrator(ABC, Generic[T]):
         )
 
     @property
-    def excluded_fields_for_insert(self) -> set[str]:
-        """Fields to exclude when converting resources for API insertion.
+    def allowed_fields_for_insert(self) -> set[str] | None:
+        """Fields that are allowed when converting resources for API insertion.
 
-        Override this property in subclasses to customize which fields are excluded.
+        Uses the OpenAPI spec to determine exactly which fields are accepted
+        by the create API for this resource type.
 
         Returns:
-            Set of field names to exclude from serialization for API insertion.
+            Set of field names allowed for API insertion, or None if no schema found.
         """
-        return {
-            "id",  # Auto-generated by destination
-            "created",  # Auto-generated by destination
-            "_xact_id",  # Internal field
-            "xact_id",  # Internal field (alternative naming)
-            "_object_delete",  # Internal field
-            "_pagination_key",  # Internal field
-            "comparison_key",  # Internal field
-            "project_id",  # Will be set to destination project
-            "org_id",  # Inferred from project_id
-        }
+        resource_type = self.resource_name.rstrip("s")  # Convert "Prompts" -> "Prompt"
+        return get_resource_create_fields(resource_type)
 
     def serialize_resource_for_insert(self, resource: T) -> dict[str, Any]:
         """Convert a Braintrust resource to a dictionary suitable for API insertion.
 
-        This method handles the serialization of Braintrust BaseModel objects using
-        their to_dict() method with JSON mode for proper serialization, and excludes
-        fields that shouldn't be included in API insert operations.
+        This method serializes the resource and includes only the fields that are
+        allowed by the OpenAPI create schema for this resource type.
 
         Args:
             resource: Resource object to serialize (typically a Braintrust BaseModel).
@@ -840,98 +908,70 @@ class ResourceMigrator(ABC, Generic[T]):
         resource_id = getattr(resource, "id", "unknown")
 
         try:
-            serialized = None
-
+            # Get the full serialized data first
             if hasattr(resource, "to_dict") and callable(resource.to_dict):
                 # Use Braintrust BaseModel's to_dict method with JSON mode for serialization
-                try:
-                    serialized = resource.to_dict(
-                        mode="json",  # Ensures all objects are JSON-serializable
-                        exclude_unset=True,  # Don't include unset fields
-                        exclude_none=True,  # Don't include None values
-                        use_api_names=True,  # Use API field names
-                    )
-                    self._logger.debug(
-                        "Successfully serialized using to_dict method",
-                        resource_type=resource_type,
-                        resource_id=resource_id,
-                    )
-                except Exception as e:
-                    self._logger.debug(
-                        "to_dict method failed, trying alternatives",
-                        error=str(e),
-                        resource_type=resource_type,
-                    )
-                    # Continue to try other methods
-
-            if (
-                serialized is None
-                and hasattr(resource, "model_dump")
-                and callable(resource.model_dump)
-            ):
-                # Fallback to standard Pydantic model_dump for non-Braintrust models
-                try:
-                    serialized = resource.model_dump(
-                        exclude=self.excluded_fields_for_insert,
-                        exclude_none=True,
-                    )
-                    self._logger.debug(
-                        "Successfully serialized using model_dump method",
-                        resource_type=resource_type,
-                        resource_id=resource_id,
-                    )
-                except Exception as e:
-                    self._logger.debug(
-                        "model_dump method failed, trying __dict__",
-                        error=str(e),
-                        resource_type=resource_type,
-                    )
-                    # Continue to try __dict__ approach
-
-            if serialized is None:
-                # Final fallback using __dict__
-                if hasattr(resource, "__dict__"):
-                    serialized = {
-                        k: v
-                        for k, v in resource.__dict__.items()
-                        if not k.startswith("_")
-                        and k not in self.excluded_fields_for_insert
-                        and v is not None
-                        and not callable(v)
-                    }
-                    self._logger.debug(
-                        "Successfully serialized using __dict__ method",
-                        resource_type=resource_type,
-                        resource_id=resource_id,
-                    )
-                else:
-                    raise ValueError(
-                        f"Resource of type {resource_type} has no serializable attributes"
-                    )
-
-            # Remove excluded fields (for methods that don't support exclude parameter)
-            if serialized and hasattr(resource, "to_dict"):
-                for field in self.excluded_fields_for_insert:
-                    serialized.pop(field, None)
+                serialized = resource.to_dict(
+                    mode="json",  # Ensures all objects are JSON-serializable
+                    exclude_unset=True,  # Don't include unset fields
+                    exclude_none=True,  # Don't include None values
+                    use_api_names=True,  # Use API field names
+                )
+                self._logger.debug(
+                    "Successfully serialized using to_dict method",
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                )
+            else:
+                # Fallback for non-Braintrust resources
+                raise ValueError(
+                    f"Resource {resource_type} does not have a to_dict() method. "
+                    f"All Braintrust resources should have this method."
+                )
 
             if not serialized:
                 raise ValueError(
                     f"Serialization resulted in empty dictionary for {resource_type}"
                 )
 
-            if not isinstance(serialized, dict):
-                raise ValueError(
-                    f"Serialization did not return a dictionary, got {type(serialized)}"
+            # Get allowed fields for this resource type
+            allowed_fields = self.allowed_fields_for_insert
+
+            if allowed_fields is not None:
+                # Include only fields that are allowed by the create API
+                filtered_serialized = {
+                    field: serialized[field]
+                    for field in allowed_fields
+                    if field in serialized
+                }
+
+                self._logger.debug(
+                    "Applied OpenAPI-based field filtering",
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    original_fields=len(serialized),
+                    filtered_fields=len(filtered_serialized),
+                    allowed_fields_count=len(allowed_fields),
                 )
 
-            self._logger.debug(
-                "Resource serialization successful",
-                resource_type=resource_type,
-                resource_id=resource_id,
-                fields_count=len(serialized),
-            )
+                if not filtered_serialized:
+                    self._logger.warning(
+                        "No allowed fields found in serialized resource",
+                        resource_type=resource_type,
+                        resource_id=resource_id,
+                        available_fields=list(serialized.keys()),
+                        allowed_fields=list(allowed_fields),
+                    )
 
-            return serialized
+                return filtered_serialized
+            else:
+                # Fallback: if no OpenAPI schema found, log warning and return original
+                self._logger.warning(
+                    "No OpenAPI schema found, including all fields (this may cause API errors)",
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                )
+                return serialized
 
         except Exception as e:
             self._logger.error(
@@ -939,9 +979,6 @@ class ResourceMigrator(ABC, Generic[T]):
                 error=str(e),
                 resource_type=resource_type,
                 resource_id=resource_id,
-                resource_attributes=list(dir(resource))
-                if hasattr(resource, "__dict__")
-                else "no __dict__",
             )
             raise ValueError(
                 f"Failed to serialize {resource_type} resource: {e}"
@@ -1258,11 +1295,3 @@ class ResourceMigrator(ABC, Generic[T]):
             "skipped_details": skipped_details,
             "migrated_details": migrated_details,
         }
-
-    def clear_dependency_cache(self) -> None:
-        """Clear the dependency cache to force fresh API calls.
-
-        This can be useful when the cache becomes stale or for testing purposes.
-        """
-        self._dependency_cache.clear()
-        self._logger.debug("Cleared dependency cache")

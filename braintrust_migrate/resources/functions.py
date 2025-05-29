@@ -13,15 +13,6 @@ class FunctionMigrator(ResourceMigrator[Function]):
         """Human-readable name for this resource type."""
         return "Functions"
 
-    @property
-    def excluded_fields_for_insert(self) -> set[str]:
-        """Fields to exclude when converting functions for API insertion.
-
-        Includes base excluded fields plus log_id since it's not accepted
-        by the function creation API.
-        """
-        return super().excluded_fields_for_insert | {"log_id"}
-
     async def get_dependencies(self, resource: Function) -> list[str]:
         """Get list of resource IDs that this function depends on.
 

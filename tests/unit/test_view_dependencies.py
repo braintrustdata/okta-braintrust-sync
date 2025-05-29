@@ -45,6 +45,19 @@ def project_view():
     view.view_data = {"filters": []}
     view.options = {"columnVisibility": {}}
     view.user_id = "user-789"
+
+    # Mock the to_dict method
+    view.to_dict.return_value = {
+        "id": "view-123",
+        "name": "Project Overview",
+        "object_type": "project",
+        "object_id": "project-456",
+        "view_type": "experiments",
+        "view_data": {"filters": []},
+        "options": {"columnVisibility": {}},
+        "user_id": "user-789",
+    }
+
     return view
 
 
@@ -60,6 +73,19 @@ def experiment_view():
     view.view_data = {"sort": [{"field": "timestamp", "order": "desc"}]}
     view.options = {"pageSize": 50}
     view.user_id = "user-789"
+
+    # Mock the to_dict method
+    view.to_dict.return_value = {
+        "id": "view-456",
+        "name": "Experiment Details",
+        "object_type": "experiment",
+        "object_id": "experiment-123",
+        "view_type": "logs",
+        "view_data": {"sort": [{"field": "timestamp", "order": "desc"}]},
+        "options": {"pageSize": 50},
+        "user_id": "user-789",
+    }
+
     return view
 
 
@@ -75,6 +101,19 @@ def dataset_view():
     view.view_data = {"filters": [{"field": "score", "op": ">", "value": 0.8}]}
     view.options = {"groupBy": ["category"]}
     view.user_id = "user-789"
+
+    # Mock the to_dict method
+    view.to_dict.return_value = {
+        "id": "view-789",
+        "name": "Dataset Analysis",
+        "object_type": "dataset",
+        "object_id": "dataset-456",
+        "view_type": "dataset",
+        "view_data": {"filters": [{"field": "score", "op": ">", "value": 0.8}]},
+        "options": {"groupBy": ["category"]},
+        "user_id": "user-789",
+    }
+
     return view
 
 
@@ -90,6 +129,19 @@ def unknown_object_view():
     view.view_data = {}
     view.options = {}
     view.user_id = "user-789"
+
+    # Mock the to_dict method
+    view.to_dict.return_value = {
+        "id": "view-999",
+        "name": "Unknown Object View",
+        "object_type": "unknown_type",
+        "object_id": "unknown-123",
+        "view_type": "custom",
+        "view_data": {},
+        "options": {},
+        "user_id": "user-789",
+    }
+
     return view
 
 

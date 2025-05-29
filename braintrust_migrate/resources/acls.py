@@ -221,9 +221,7 @@ class ACLMigrator(ResourceMigrator[ACL]):
         )
 
         # Create ACL in destination
-        create_params = {
-            "object_type": resource.object_type,
-        }
+        create_params = self.serialize_resource_for_insert(resource)
 
         # Resolve object_id dependency
         mapped_object_id = self.state.id_mapping.get(resource.object_id)
@@ -267,10 +265,8 @@ class ACLMigrator(ResourceMigrator[ACL]):
                     f"Could not resolve group dependency for ACL {resource.id}"
                 )
 
-        # Handle permission or role_id
-        if hasattr(resource, "permission") and resource.permission:
-            create_params["permission"] = resource.permission
-        elif hasattr(resource, "role_id") and resource.role_id:
+        # Handle role_id with dependency resolution
+        if hasattr(resource, "role_id") and resource.role_id:
             mapped_role_id = self.state.id_mapping.get(resource.role_id)
             if mapped_role_id:
                 create_params["role_id"] = mapped_role_id
@@ -289,10 +285,6 @@ class ACLMigrator(ResourceMigrator[ACL]):
                 raise Exception(
                     f"Could not resolve role dependency for ACL {resource.id}"
                 )
-
-        # Copy optional fields
-        if hasattr(resource, "restrict_object_type") and resource.restrict_object_type:
-            create_params["restrict_object_type"] = resource.restrict_object_type
 
         dest_acl = await self.dest_client.with_retry(
             "create_acl", lambda: self.dest_client.client.acls.create(**create_params)

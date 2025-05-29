@@ -13,15 +13,6 @@ class LogsMigrator(ResourceMigrator[ProjectLogsEvent]):
         """Human-readable name for this resource type."""
         return "Logs"
 
-    @property
-    def excluded_fields_for_insert(self) -> set[str]:
-        """Fields to exclude when converting log events for API insertion.
-
-        Includes base excluded fields plus log_id since it's specified
-        in the API endpoint path when inserting log events.
-        """
-        return super().excluded_fields_for_insert | {"log_id"}
-
     def get_resource_id(self, resource: ProjectLogsEvent) -> str:
         """Get the unique identifier for a log event.
 

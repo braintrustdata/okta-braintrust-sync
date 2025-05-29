@@ -107,16 +107,7 @@ class RoleMigrator(ResourceMigrator[Role]):
         )
 
         # Create role in destination
-        create_params = {
-            "name": resource.name,
-        }
-
-        # Copy optional fields if they exist
-        if hasattr(resource, "description") and resource.description:
-            create_params["description"] = resource.description
-
-        if hasattr(resource, "member_permissions") and resource.member_permissions:
-            create_params["member_permissions"] = resource.member_permissions
+        create_params = self.serialize_resource_for_insert(resource)
 
         # Handle member_roles with dependency resolution
         if hasattr(resource, "member_roles") and resource.member_roles:

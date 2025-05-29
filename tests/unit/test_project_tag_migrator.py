@@ -310,6 +310,17 @@ class TestProjectTagMigrator:
         minimal_tag.description = None
         minimal_tag.color = None
 
+        # Mock the to_dict method
+        minimal_tag.to_dict.return_value = {
+            "id": "tag-123",
+            "name": "Minimal Tag",
+            "project_id": "project-456",
+            "user_id": "user-789",
+            "created": "2023-01-01T00:00:00Z",
+            "description": None,
+            "color": None,
+        }
+
         # Set up ID mapping
         migrator = ProjectTagMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
