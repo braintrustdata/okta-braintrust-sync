@@ -56,6 +56,9 @@ This tool provides comprehensive migration capabilities for Braintrust organizat
 git clone https://github.com/braintrustdata/braintrust-migrate
 cd braintrust-migrate
 
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Install with uv (recommended)
 uv sync --all-extras
 source .venv/bin/activate
