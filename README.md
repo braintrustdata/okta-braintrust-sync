@@ -53,8 +53,8 @@ This tool provides comprehensive migration capabilities for Braintrust organizat
 
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd migration-tool
+git clone https://github.com/braintrustdata/braintrust-migrate
+cd braintrust-migrate
 
 # Install with uv (recommended)
 uv sync --all-extras
