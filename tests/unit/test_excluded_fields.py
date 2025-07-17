@@ -31,9 +31,6 @@ class TestOpenAPIFieldInclusion:
             async def list_source_resources(self, project_id=None):
                 return []
 
-            async def resource_exists_in_dest(self, resource):
-                return None
-
             async def migrate_resource(self, resource):
                 return "test-id"
 

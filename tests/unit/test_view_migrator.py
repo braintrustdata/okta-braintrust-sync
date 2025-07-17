@@ -137,49 +137,6 @@ class TestViewMigrator:
         assert views[0] == sample_view_for_migrator
         mock_source_client.with_retry.assert_called_once()
 
-    async def test_resource_exists_in_dest_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_view_for_migrator,
-    ):
-        """Test checking if view exists in destination - found."""
-        existing_view = Mock(spec=View)
-        existing_view.id = "dest-view-123"
-        existing_view.name = "Test View"
-        mock_response = Mock()
-        mock_response.objects = [existing_view]
-        mock_dest_client.with_retry.return_value = mock_response
-
-        migrator = ViewMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-        result = await migrator.resource_exists_in_dest(sample_view_for_migrator)
-
-        assert result == "dest-view-123"
-        mock_dest_client.with_retry.assert_called_once()
-
-    async def test_resource_exists_in_dest_not_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_view_for_migrator,
-    ):
-        """Test checking if view exists in destination - not found."""
-        mock_response = Mock()
-        mock_response.objects = []
-        mock_dest_client.with_retry.return_value = mock_response
-
-        migrator = ViewMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-        result = await migrator.resource_exists_in_dest(sample_view_for_migrator)
-
-        assert result is None
-        mock_dest_client.with_retry.assert_called_once()
-
     async def test_migrate_resource_success(
         self,
         mock_source_client,

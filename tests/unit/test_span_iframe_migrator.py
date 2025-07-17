@@ -26,7 +26,7 @@ class TestSpanIframeMigrator:
 
     async def test_resource_name(self, span_iframe_migrator):
         """Test the resource_name property."""
-        assert span_iframe_migrator.resource_name == "SpanIframes"
+        assert span_iframe_migrator.resource_name == "SpanIFrames"
 
     async def test_list_source_resources_all(
         self, span_iframe_migrator, mock_source_client, sample_span_iframe
@@ -111,94 +111,6 @@ class TestSpanIframeMigrator:
         """Test extracting resource ID."""
         resource_id = span_iframe_migrator.get_resource_id(sample_span_iframe)
         assert resource_id == "span-iframe-123"
-
-    async def test_resource_exists_in_dest_found(
-        self, span_iframe_migrator, mock_dest_client, sample_span_iframe
-    ):
-        """Test checking if span iframe exists in destination - found."""
-        # Mock existing span iframe in destination
-        dest_iframe = SpanIFrame(
-            id="dest-iframe-123",
-            project_id=TEST_DEST_PROJECT_ID,
-            name="Test Span Iframe",
-            url="https://dest.example.com/iframe",
-        )
-        mock_dest_client.with_retry.return_value = [dest_iframe]
-
-        result = await span_iframe_migrator.resource_exists_in_dest(sample_span_iframe)
-
-        assert result == "dest-iframe-123"
-        mock_dest_client.with_retry.assert_called_once()
-
-    async def test_resource_exists_in_dest_not_found(
-        self, span_iframe_migrator, mock_dest_client, sample_span_iframe
-    ):
-        """Test checking if span iframe exists in destination - not found."""
-        mock_dest_client.with_retry.return_value = []
-
-        result = await span_iframe_migrator.resource_exists_in_dest(sample_span_iframe)
-
-        assert result is None
-
-    async def test_resource_exists_in_dest_different_project(
-        self, span_iframe_migrator, mock_dest_client, sample_span_iframe
-    ):
-        """Test checking if span iframe exists but in different project."""
-        # Mock span iframe with same name but different project
-        dest_iframe = SpanIFrame(
-            id="dest-iframe-123",
-            project_id="other-project-789",
-            name="Test Span Iframe",
-            url="https://dest.example.com/iframe",
-        )
-        mock_dest_client.with_retry.return_value = [dest_iframe]
-
-        result = await span_iframe_migrator.resource_exists_in_dest(sample_span_iframe)
-
-        assert result is None
-
-    async def test_resource_exists_in_dest_async_iterator(
-        self, span_iframe_migrator, mock_dest_client, sample_span_iframe
-    ):
-        """Test checking existence when API returns async iterator."""
-        dest_iframe = SpanIFrame(
-            id="dest-iframe-123",
-            project_id=TEST_DEST_PROJECT_ID,
-            name="Test Span Iframe",
-            url="https://dest.example.com/iframe",
-        )
-
-        class AsyncIterator:
-            def __init__(self, items):
-                self.items = items
-                self.index = 0
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                if self.index >= len(self.items):
-                    raise StopAsyncIteration
-                item = self.items[self.index]
-                self.index += 1
-                return item
-
-        mock_response = AsyncIterator([dest_iframe])
-        mock_dest_client.with_retry.return_value = mock_response
-
-        result = await span_iframe_migrator.resource_exists_in_dest(sample_span_iframe)
-
-        assert result == "dest-iframe-123"
-
-    async def test_resource_exists_in_dest_error(
-        self, span_iframe_migrator, mock_dest_client, sample_span_iframe
-    ):
-        """Test error handling when checking if span iframe exists."""
-        mock_dest_client.with_retry.side_effect = Exception("API Error")
-
-        result = await span_iframe_migrator.resource_exists_in_dest(sample_span_iframe)
-
-        assert result is None
 
     async def test_migrate_resource_full(
         self, span_iframe_migrator, mock_dest_client, sample_span_iframe
