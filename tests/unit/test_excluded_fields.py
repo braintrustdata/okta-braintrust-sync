@@ -110,6 +110,7 @@ class TestOpenAPIFieldInclusion:
             "dataset_id",
             "project_id",
             "name",
+            "tags",
         }
         assert allowed_fields == expected_allowed
 
