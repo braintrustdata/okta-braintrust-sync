@@ -30,7 +30,6 @@ class ProjectScoreMigrator(ResourceMigrator[ProjectScore]):
         logger.info("Listing project scores from source", project_id=project_id)
 
         try:
-            # Use base class helper method with client-side filtering
             return await self._list_resources_with_client(
                 self.source_client,
                 "project_scores",
@@ -43,43 +42,6 @@ class ProjectScoreMigrator(ResourceMigrator[ProjectScore]):
                 "Failed to list project scores", error=str(e), project_id=project_id
             )
             raise
-
-    async def resource_exists_in_dest(self, resource: ProjectScore) -> bool:
-        """Check if a project score exists in the destination.
-
-        Args:
-            resource: The project score to check
-
-        Returns:
-            True if the project score exists in destination
-        """
-        try:
-            # Try to find a project score with the same name in the same destination project
-            dest_project_id = self.state.id_mapping.get(resource.project_id)
-            if not dest_project_id:
-                logger.warning(
-                    "No destination project mapping found",
-                    source_project_id=resource.project_id,
-                    score_name=resource.name,
-                )
-                return False
-
-            # Use base class helper with project score specific parameters
-            additional_params = {"project_score_name": resource.name}
-            dest_id = await self._check_resource_exists_by_name(
-                resource, "project_scores", additional_params=additional_params
-            )
-
-            return dest_id is not None
-
-        except Exception as e:
-            logger.warning(
-                "Error checking if project score exists in destination",
-                error=str(e),
-                score_name=resource.name,
-                source_project_id=resource.project_id,
-            )
-            return False
 
     async def migrate_resource(self, resource: ProjectScore) -> str:
         """Migrate a single project score to the destination.
@@ -154,19 +116,17 @@ class ProjectScoreMigrator(ResourceMigrator[ProjectScore]):
         if not config:
             return config
 
-        # Convert to dict using base class utility
-        config_dict = self._to_dict_safe(config)
+        # Convert config to dict and resolve dependencies - all Braintrust objects have to_dict()
+        config_dict = config.to_dict()
 
-        # Handle online scoring config
+        # Handle online scoring config with dependency resolution
         if config_dict.get("online"):
             online_config = config_dict["online"]
-            # Convert online config to dict too
-            online_dict = self._to_dict_safe(online_config)
 
-            # Resolve scorer function dependencies
-            if online_dict.get("scorers"):
+            # Resolve scorer function dependencies if present
+            if online_config.get("scorers"):
                 resolved_scorers = []
-                for scorer in online_dict["scorers"]:
+                for scorer in online_config["scorers"]:
                     resolved_scorer = self._resolve_function_reference_generic(scorer)
                     if resolved_scorer:
                         resolved_scorers.append(resolved_scorer)
@@ -175,8 +135,8 @@ class ProjectScoreMigrator(ResourceMigrator[ProjectScore]):
                             "Failed to resolve scorer function reference",
                             scorer=scorer,
                         )
-                online_dict["scorers"] = resolved_scorers
-                config_dict["online"] = online_dict
+                online_config["scorers"] = resolved_scorers
+                config_dict["online"] = online_config
 
         return config_dict
 
@@ -209,23 +169,3 @@ class ProjectScoreMigrator(ResourceMigrator[ProjectScore]):
                             dependencies.append(scorer.id)
 
         return dependencies
-
-    def get_checksum(self, resource: ProjectScore) -> str:
-        """Generate a checksum for a project score.
-
-        Args:
-            resource: The project score to generate checksum for
-
-        Returns:
-            Checksum string
-        """
-        # Include key fields that define the project score
-        checksum_data = {
-            "name": resource.name,
-            "score_type": resource.score_type,
-            "description": resource.description,
-            "categories": resource.categories,
-            "config": resource.config,
-        }
-
-        return self._compute_checksum(checksum_data)

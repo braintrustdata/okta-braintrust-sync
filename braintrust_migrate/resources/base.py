@@ -1,6 +1,5 @@
 """Abstract base class for Braintrust resource migrators."""
 
-import hashlib
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -26,7 +25,6 @@ class MigrationResult:
     dest_id: str | None = None
     skipped: bool = False
     error: str | None = None
-    checksum: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -37,7 +35,6 @@ class MigrationState:
     completed_ids: set[str] = field(default_factory=set)
     failed_ids: set[str] = field(default_factory=set)
     id_mapping: dict[str, str] = field(default_factory=dict)  # source_id -> dest_id
-    checksums: dict[str, str] = field(default_factory=dict)  # source_id -> checksum
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,7 +43,6 @@ class MigrationState:
             "completed_ids": list(self.completed_ids),
             "failed_ids": list(self.failed_ids),
             "id_mapping": self.id_mapping,
-            "checksums": self.checksums,
             "metadata": self.metadata,
         }
 
@@ -57,7 +53,6 @@ class MigrationState:
             completed_ids=set(data.get("completed_ids", [])),
             failed_ids=set(data.get("failed_ids", [])),
             id_mapping=data.get("id_mapping", {}),
-            checksums=data.get("checksums", {}),
             metadata=data.get("metadata", {}),
         )
 
@@ -157,77 +152,6 @@ class ResourceMigrator(ABC, Generic[T]):
         except Exception as e:
             self._logger.error("Failed to save migration state", error=str(e))
 
-    def _compute_checksum(self, data: Any) -> str:
-        """Compute SHA-256 checksum of data for change detection.
-
-        Args:
-            data: Data to compute checksum for.
-
-        Returns:
-            Hex string of SHA-256 checksum.
-        """
-        if data is None:
-            serialized = ""
-        elif isinstance(data, dict | list | tuple):
-            # Use deterministic JSON serialization
-            serialized = json.dumps(data, sort_keys=True, default=str)
-        elif hasattr(data, "to_dict") and callable(data.to_dict):
-            # Handle Braintrust resources
-            try:
-                dict_data = data.to_dict(exclude_unset=True, exclude_none=True)
-                serialized = json.dumps(dict_data, sort_keys=True, default=str)
-            except Exception:
-                # Fallback to string representation
-                serialized = str(data)
-        else:
-            # Convert to string
-            serialized = str(data)
-
-        # Compute hash
-        return hashlib.sha256(serialized.encode()).hexdigest()
-
-    def _to_dict_safe(self, obj: Any) -> dict:
-        """Safely convert any object to dictionary using common patterns.
-
-        This utility method handles the common object-to-dict conversion patterns
-        used throughout the migration system.
-
-        Args:
-            obj: Object to convert to dictionary
-
-        Returns:
-            Dictionary representation of the object
-
-        Raises:
-            ValueError: If the object cannot be converted to a dictionary
-        """
-        if obj is None:
-            return {}
-
-        # Handle objects with __dict__ attribute
-        if hasattr(obj, "__dict__"):
-            return obj.__dict__.copy()
-
-        # Handle Pydantic/BaseModel objects with model_dump
-        if hasattr(obj, "model_dump") and callable(obj.model_dump):
-            return obj.model_dump()
-
-        # Handle Braintrust objects with to_dict
-        if hasattr(obj, "to_dict") and callable(obj.to_dict):
-            return obj.to_dict()
-
-        # Handle dict-like objects
-        if isinstance(obj, dict):
-            return obj.copy()
-
-        # Try to convert to dict
-        try:
-            return dict(obj)
-        except (TypeError, ValueError) as e:
-            raise ValueError(
-                f"Cannot convert {type(obj).__name__} to dictionary"
-            ) from e
-
     def _resolve_function_reference_generic(self, function_ref: Any) -> dict | None:
         """Generic function reference resolver used across multiple migrators.
 
@@ -244,8 +168,18 @@ class ResourceMigrator(ABC, Generic[T]):
             return None
 
         try:
-            # Convert to dict using our safe utility
-            ref_dict = self._to_dict_safe(function_ref)
+            # Handle both dict and object cases
+            if isinstance(function_ref, dict):
+                ref_dict = function_ref
+            elif hasattr(function_ref, "to_dict"):
+                ref_dict = function_ref.to_dict()
+            else:
+                self._logger.warning(
+                    "Function reference is not a dict and has no to_dict method",
+                    function_ref_type=type(function_ref).__name__,
+                    function_ref=str(function_ref),
+                )
+                return None
 
             # Handle function ID type reference
             if ref_dict.get("type") == "function" and "id" in ref_dict:
@@ -278,37 +212,6 @@ class ResourceMigrator(ABC, Generic[T]):
             )
             return None
 
-    def should_skip_resource(self, source_id: str, current_data: Any) -> bool:
-        """Check if a resource should be skipped based on existing state.
-
-        Args:
-            source_id: Source resource ID.
-            current_data: Current resource data.
-
-        Returns:
-            True if resource should be skipped, False otherwise.
-        """
-        # Skip if already completed
-        if source_id in self.state.completed_ids:
-            # Check if data has changed by comparing checksums
-            current_checksum = self._compute_checksum(current_data)
-            stored_checksum = self.state.checksums.get(source_id)
-
-            if stored_checksum == current_checksum:
-                self._logger.debug("Skipping unchanged resource", source_id=source_id)
-                return True
-            else:
-                self._logger.info(
-                    "Resource has changed, will re-migrate",
-                    source_id=source_id,
-                    old_checksum=stored_checksum,
-                    new_checksum=current_checksum,
-                )
-                # Remove from completed set to force re-migration
-                self.state.completed_ids.discard(source_id)
-
-        return False
-
     def record_success(
         self,
         source_id: str,
@@ -321,15 +224,12 @@ class ResourceMigrator(ABC, Generic[T]):
         Args:
             source_id: Source resource ID.
             dest_id: Destination resource ID.
-            data: Resource data that was migrated.
+            data: Resource data that was migrated (unused for simple tracking).
             metadata: Optional metadata about the migration.
         """
-        checksum = self._compute_checksum(data)
-
         self.state.completed_ids.add(source_id)
         self.state.failed_ids.discard(source_id)
         self.state.id_mapping[source_id] = dest_id
-        self.state.checksums[source_id] = checksum
 
         if metadata:
             self.state.metadata[source_id] = metadata
@@ -338,7 +238,6 @@ class ResourceMigrator(ABC, Generic[T]):
             "Recorded successful migration",
             source_id=source_id,
             dest_id=dest_id,
-            checksum=checksum,
         )
 
     def record_failure(self, source_id: str, error: str) -> None:
@@ -390,18 +289,6 @@ class ResourceMigrator(ABC, Generic[T]):
             raise AttributeError(
                 f"Resource {type(resource)} does not have an 'id' attribute"
             )
-
-    @abstractmethod
-    async def resource_exists_in_dest(self, resource: T) -> str | None:
-        """Check if a resource already exists in the destination.
-
-        Args:
-            resource: Source resource to check.
-
-        Returns:
-            Destination resource ID if it exists, None otherwise.
-        """
-        pass
 
     @abstractmethod
     async def migrate_resource(self, resource: T) -> str:
@@ -530,90 +417,6 @@ class ResourceMigrator(ABC, Generic[T]):
                 f"Failed to list {resource_type}", error=str(e), project_id=project_id
             )
             raise
-
-    async def _check_resource_exists_by_name(
-        self,
-        resource: T,
-        resource_type: str,
-        name_field: str = "name",
-        additional_match_fields: list[str] | None = None,
-        additional_params: dict | None = None,
-    ) -> str | None:
-        """Generic method to check if a resource exists in destination by name.
-
-        Args:
-            resource: Source resource to check
-            resource_type: Resource type name (e.g., 'datasets', 'experiments')
-            name_field: Field name to use for name matching (default: 'name')
-            additional_match_fields: Additional fields that must match (e.g., ['slug'])
-            additional_params: Additional parameters for the API call
-
-        Returns:
-            Destination resource ID if found, None otherwise
-        """
-        try:
-            # Build search parameters
-            params = {}
-            if self.dest_project_id:
-                params["project_id"] = self.dest_project_id
-
-            # Add name-based filtering if supported by API
-            resource_name = getattr(resource, name_field)
-            params[f"{resource_type[:-1]}_name"] = (
-                resource_name  # e.g., dataset_name, experiment_name
-            )
-
-            if additional_params:
-                params.update(additional_params)
-
-            # Get destination resources
-            dest_resources = await self._list_resources_with_client(
-                self.dest_client, resource_type, additional_params=params
-            )
-
-            # Check for matches
-            for dest_resource in dest_resources:
-                # Check primary name field
-                if getattr(dest_resource, name_field) != resource_name:
-                    continue
-
-                # Check additional match fields if specified
-                if additional_match_fields:
-                    match = True
-                    for field in additional_match_fields:
-                        if getattr(dest_resource, field, None) != getattr(
-                            resource, field, None
-                        ):
-                            match = False
-                            break
-                    if not match:
-                        continue
-
-                # Check project ID if applicable
-                if (
-                    self.dest_project_id
-                    and hasattr(dest_resource, "project_id")
-                    and dest_resource.project_id != self.dest_project_id
-                ):
-                    continue
-
-                self._logger.debug(
-                    f"Found existing {resource_type[:-1]} in destination",
-                    source_id=self.get_resource_id(resource),
-                    dest_id=dest_resource.id,
-                    name=resource_name,
-                )
-                return dest_resource.id
-
-            return None
-
-        except Exception as e:
-            self._logger.warning(
-                f"Error checking if {resource_type[:-1]} exists in destination",
-                error=str(e),
-                resource_name=getattr(resource, name_field, "unknown"),
-            )
-            return None
 
     async def get_dependencies(self, resource: T) -> list[str]:
         """Get list of resource IDs that this resource depends on.
@@ -798,6 +601,10 @@ class ResourceMigrator(ABC, Generic[T]):
                     "Source dependency resource not found",
                     resource_type=resource_type,
                     dependency_id=dependency_id,
+                    total_source_resources=len(source_resources),
+                    sample_source_ids=[
+                        self.get_resource_id(r) for r in source_resources[:3]
+                    ],  # Show first 3 source IDs
                 )
                 return None
 
@@ -841,6 +648,10 @@ class ResourceMigrator(ABC, Generic[T]):
                 resource_type=resource_type,
                 dependency_id=dependency_id,
                 source_name=source_name,
+                available_dest_names=[
+                    getattr(r, "name", None) for r in dest_resources[:5]
+                ],  # Show first 5 destination names
+                total_dest_resources=len(dest_resources),
             )
             return None
 
@@ -887,19 +698,16 @@ class ResourceMigrator(ABC, Generic[T]):
         return get_resource_create_fields(resource_type)
 
     def serialize_resource_for_insert(self, resource: T) -> dict[str, Any]:
-        """Convert a Braintrust resource to a dictionary suitable for API insertion.
+        """Serialize a resource for insertion into the destination.
 
-        This method serializes the resource and includes only the fields that are
-        allowed by the OpenAPI create schema for this resource type.
+        Default implementation uses common Braintrust patterns.
+        Override for resource-specific logic.
 
         Args:
-            resource: Resource object to serialize (typically a Braintrust BaseModel).
+            resource: Resource to serialize.
 
         Returns:
-            Dictionary representation suitable for API insertion.
-
-        Raises:
-            ValueError: If the resource cannot be serialized.
+            Dictionary suitable for creation in destination.
         """
         if resource is None:
             raise ValueError("Cannot serialize None resource")
@@ -908,71 +716,21 @@ class ResourceMigrator(ABC, Generic[T]):
         resource_id = getattr(resource, "id", "unknown")
 
         try:
-            # Get the full serialized data first
+            # Try the full Braintrust API object serialization first
             if hasattr(resource, "to_dict") and callable(resource.to_dict):
-                # Use Braintrust BaseModel's to_dict method with JSON mode for serialization
-                serialized = resource.to_dict(
-                    mode="json",  # Ensures all objects are JSON-serializable
-                    exclude_unset=True,  # Don't include unset fields
-                    exclude_none=True,  # Don't include None values
-                    use_api_names=True,  # Use API field names
-                )
-                self._logger.debug(
-                    "Successfully serialized using to_dict method",
-                    resource_type=resource_type,
-                    resource_id=resource_id,
-                )
-            else:
-                # Fallback for non-Braintrust resources
-                raise ValueError(
-                    f"Resource {resource_type} does not have a to_dict() method. "
-                    f"All Braintrust resources should have this method."
-                )
-
-            if not serialized:
-                raise ValueError(
-                    f"Serialization resulted in empty dictionary for {resource_type}"
-                )
-
-            # Get allowed fields for this resource type
-            allowed_fields = self.allowed_fields_for_insert
-
-            if allowed_fields is not None:
-                # Include only fields that are allowed by the create API
-                filtered_serialized = {
-                    field: serialized[field]
-                    for field in allowed_fields
-                    if field in serialized
-                }
-
-                self._logger.debug(
-                    "Applied OpenAPI-based field filtering",
-                    resource_type=resource_type,
-                    resource_id=resource_id,
-                    original_fields=len(serialized),
-                    filtered_fields=len(filtered_serialized),
-                    allowed_fields_count=len(allowed_fields),
-                )
-
-                if not filtered_serialized:
-                    self._logger.warning(
-                        "No allowed fields found in serialized resource",
-                        resource_type=resource_type,
-                        resource_id=resource_id,
-                        available_fields=list(serialized.keys()),
-                        allowed_fields=list(allowed_fields),
+                try:
+                    serialized = resource.to_dict(
+                        mode="json",
+                        exclude_unset=True,
+                        exclude_none=True,
+                        use_api_names=True,
                     )
-
-                return filtered_serialized
+                except TypeError:
+                    # Fallback for objects that don't support these parameters
+                    serialized = resource.to_dict()
             else:
-                # Fallback: if no OpenAPI schema found, log warning and return original
-                self._logger.warning(
-                    "No OpenAPI schema found, including all fields (this may cause API errors)",
-                    resource_type=resource_type,
-                    resource_id=resource_id,
-                )
-                return serialized
-
+                # Fallback for objects without to_dict method
+                serialized = resource.__dict__.copy()
         except Exception as e:
             self._logger.error(
                 "Failed to serialize resource for insertion",
@@ -981,8 +739,29 @@ class ResourceMigrator(ABC, Generic[T]):
                 resource_id=resource_id,
             )
             raise ValueError(
-                f"Failed to serialize {resource_type} resource: {e}"
+                f"Failed to serialize resource {resource_type} with id {resource_id}"
             ) from e
+
+        allowed_fields = self.allowed_fields_for_insert
+        if allowed_fields is None:
+            self._logger.warning(
+                "No allowed fields for insertion found for resource type",
+                resource_type=resource_type,
+            )
+            return serialized
+
+        filtered_serialized = {
+            field: serialized[field] for field in allowed_fields if field in serialized
+        }
+
+        if not filtered_serialized:
+            self._logger.warning(
+                "No allowed fields found for resource, returning all fields",
+                resource_type=resource_type,
+            )
+            return serialized
+
+        return filtered_serialized
 
     async def resolve_dependencies(
         self, dependencies: list[str], strict: bool = True
@@ -1015,6 +794,8 @@ class ResourceMigrator(ABC, Generic[T]):
                 "Some dependencies could not be resolved",
                 unresolved_count=len(unresolved),
                 resolved_count=len(resolved),
+                unresolved_ids=unresolved,
+                resolved_ids=list(resolved.keys()),
             )
 
             if strict:
@@ -1038,76 +819,29 @@ class ResourceMigrator(ABC, Generic[T]):
             try:
                 source_id = self.get_resource_id(resource)
 
-                # Check if this resource should be migrated in this pass
-                if hasattr(self, "should_migrate_resource"):
-                    should_migrate = await self.should_migrate_resource(resource)
-                    if not should_migrate:
-                        resource_name = getattr(resource, "name", None)
-                        self._logger.info(
-                            f"⏭️  Skipped {self.resource_name[:-1].lower()} (wrong pass)",
-                            source_id=source_id,
-                            name=resource_name,
-                        )
-                        results.append(
-                            MigrationResult(
-                                success=True,
-                                source_id=source_id,
-                                dest_id=self.state.id_mapping.get(source_id),
-                                skipped=True,
-                                metadata={
-                                    "name": resource_name,
-                                    "skip_reason": "wrong_pass",
-                                }
-                                if resource_name
-                                else {"skip_reason": "wrong_pass"},
-                            )
-                        )
-                        continue
-
-                # Check if should skip
-                if self.should_skip_resource(source_id, resource):
+                if source_id in self.state.id_mapping.keys():
                     resource_name = getattr(resource, "name", None)
+                    dest_id = self.state.id_mapping.get(source_id)
+
                     self._logger.info(
-                        f"⏭️  Skipped {self.resource_name[:-1].lower()} (unchanged)",
+                        f"⏭️  Skipped {self.resource_name[:-1].lower()} (already migrated)",
                         source_id=source_id,
+                        dest_id=dest_id,
                         name=resource_name,
                     )
+
                     results.append(
                         MigrationResult(
                             success=True,
                             source_id=source_id,
-                            dest_id=self.state.id_mapping.get(source_id),
-                            skipped=True,
-                            metadata={"name": resource_name, "skip_reason": "unchanged"}
-                            if resource_name
-                            else {"skip_reason": "unchanged"},
-                        )
-                    )
-                    continue
-
-                # Check if already exists in destination
-                existing_dest_id = await self.resource_exists_in_dest(resource)
-                if existing_dest_id:
-                    resource_name = getattr(resource, "name", None)
-                    self._logger.info(
-                        f"⏭️  Skipped {self.resource_name[:-1].lower()} (already exists)",
-                        source_id=source_id,
-                        dest_id=existing_dest_id,
-                        name=resource_name,
-                    )
-                    self.record_success(source_id, existing_dest_id, resource)
-                    results.append(
-                        MigrationResult(
-                            success=True,
-                            source_id=source_id,
-                            dest_id=existing_dest_id,
+                            dest_id=dest_id,
                             skipped=True,
                             metadata={
                                 "name": resource_name,
-                                "skip_reason": "already_exists",
+                                "skip_reason": "already_migrated",
                             }
                             if resource_name
-                            else {"skip_reason": "already_exists"},
+                            else {"skip_reason": "already_migrated"},
                         )
                     )
                     continue
@@ -1133,7 +867,6 @@ class ResourceMigrator(ABC, Generic[T]):
 
                 # Perform migration
                 dest_id = await self.migrate_resource(resource)
-                checksum = self._compute_checksum(resource)
 
                 # Log successful creation
                 resource_name = getattr(resource, "name", None)
@@ -1150,7 +883,6 @@ class ResourceMigrator(ABC, Generic[T]):
                         success=True,
                         source_id=source_id,
                         dest_id=dest_id,
-                        checksum=checksum,
                         metadata={"name": resource_name} if resource_name else {},
                     )
                 )
@@ -1270,19 +1002,24 @@ class ResourceMigrator(ABC, Generic[T]):
             failed=failed_count,
         )
 
-        # Log skipped details if any
+        # Log brief skip summary if any - make this very visible
         if skipped_details:
             skip_reasons = {}
             for detail in skipped_details:
                 reason = detail["skip_reason"]
                 skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
 
+            # Create a brief, readable summary
+            skip_summary = ", ".join(
+                [
+                    f"{count} {reason.replace('_', ' ')}"
+                    for reason, count in skip_reasons.items()
+                ]
+            )
+
             self._logger.info(
-                f"Skipped {self.resource_name} breakdown",
-                skip_reasons=skip_reasons,
-                sample_skipped=[
-                    d for d in skipped_details[:3]
-                ],  # Show first 3 as examples
+                f"📋 {self.resource_name} skipped: {skip_summary}",
+                breakdown=skip_reasons,
             )
 
         return {

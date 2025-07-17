@@ -89,6 +89,8 @@ class OpenAPISchemaManager:
         # Handle special cases where OpenAPI schema names don't follow Create{ResourceType} pattern
         special_cases = {
             "Log": "InsertProjectLogsEvent",
+            "ExperimentEvent": "InsertExperimentEvent",
+            "DatasetEvent": "InsertDatasetEvent",
         }
 
         create_schema_name = special_cases.get(resource_type, f"Create{resource_type}")

@@ -57,29 +57,6 @@ class AISecretMigrator(ResourceMigrator[AISecret]):
             self._logger.error("Failed to list source AI secrets", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: AISecret) -> str | None:
-        """Check if an AI secret already exists in the destination.
-
-        Args:
-            resource: Source AI secret to check.
-
-        Returns:
-            Destination AI secret ID if it exists, None otherwise.
-        """
-        # Use base class helper method for organization-scoped resources
-        additional_params = {"ai_secret_name": resource.name}
-        # Override dest_project_id temporarily since AI secrets are org-scoped
-        original_dest_project_id = self.dest_project_id
-        self.dest_project_id = None
-        try:
-            result = await self._check_resource_exists_by_name(
-                resource, "ai_secrets", additional_params=additional_params
-            )
-            return result
-        finally:
-            # Restore original dest_project_id
-            self.dest_project_id = original_dest_project_id
-
     async def migrate_resource(self, resource: AISecret) -> str:
         """Migrate a single AI secret from source to destination.
 

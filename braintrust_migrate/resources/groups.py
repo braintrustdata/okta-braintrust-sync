@@ -67,29 +67,6 @@ class GroupMigrator(ResourceMigrator[Group]):
             self._logger.error("Failed to list source groups", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: Group) -> str | None:
-        """Check if a group already exists in the destination.
-
-        Args:
-            resource: Source group to check.
-
-        Returns:
-            Destination group ID if it exists, None otherwise.
-        """
-        # Use base class helper method for organization-scoped resources
-        additional_params = {"group_name": resource.name}
-        # Override dest_project_id temporarily since groups are org-scoped
-        original_dest_project_id = self.dest_project_id
-        self.dest_project_id = None
-        try:
-            result = await self._check_resource_exists_by_name(
-                resource, "groups", additional_params=additional_params
-            )
-            return result
-        finally:
-            # Restore original dest_project_id
-            self.dest_project_id = original_dest_project_id
-
     async def migrate_resource(self, resource: Group) -> str:
         """Migrate a single group from source to destination.
 

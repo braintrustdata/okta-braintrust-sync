@@ -74,24 +74,6 @@ class FunctionMigrator(ResourceMigrator[Function]):
             self._logger.error("Failed to list source functions", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: Function) -> str | None:
-        """Check if a function already exists in the destination.
-
-        Args:
-            resource: Source function to check.
-
-        Returns:
-            Destination function ID if it exists, None otherwise.
-        """
-        # Use base class helper method with slug matching
-        additional_params = {"function_name": resource.name}
-        return await self._check_resource_exists_by_name(
-            resource,
-            "functions",
-            additional_match_fields=["slug"],
-            additional_params=additional_params,
-        )
-
     async def migrate_resource(self, resource: Function) -> str:
         """Migrate a single function from source to destination.
 

@@ -89,51 +89,6 @@ class ViewMigrator(ResourceMigrator[View]):
             self._logger.error("Failed to list source views", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: View) -> str | None:
-        """Check if a view already exists in the destination.
-
-        Args:
-            resource: Source view to check.
-
-        Returns:
-            Destination view ID if it exists, None otherwise.
-        """
-        try:
-            # Views API requires object_id and object_type, so we need to check manually
-            dest_object_id = self._resolve_object_id(resource)
-
-            # List views for the specific object
-            views_response = await self.dest_client.with_retry(
-                "list_views",
-                lambda: self.dest_client.client.views.list(
-                    object_type=resource.object_type,
-                    object_id=dest_object_id,
-                ),
-            )
-
-            views = await self._handle_api_response_to_list(views_response)
-
-            # Look for a view with the same name
-            for view in views:
-                if view.name == resource.name:
-                    self._logger.debug(
-                        "Found existing view in destination",
-                        view_name=resource.name,
-                        source_id=resource.id,
-                        dest_id=view.id,
-                    )
-                    return view.id
-
-            return None
-
-        except Exception as e:
-            self._logger.warning(
-                "Error checking if view exists in destination",
-                error=str(e),
-                resource_name=resource.name,
-            )
-            return None
-
     def _resolve_object_id(self, resource: View) -> str:
         """Resolve the object_id for the destination based on object_type.
 

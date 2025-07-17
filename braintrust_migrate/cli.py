@@ -105,7 +105,7 @@ def migrate(
             "-f",
             help="Log format (json or text)",
         ),
-    ] = "json",
+    ] = "text",
     config_file: Annotated[
         Path | None,
         typer.Option(

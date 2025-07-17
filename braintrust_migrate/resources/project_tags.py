@@ -40,21 +40,6 @@ class ProjectTagMigrator(ResourceMigrator[ProjectTag]):
             self._logger.error("Failed to list source project tags", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: ProjectTag) -> str | None:
-        """Check if a project tag already exists in the destination.
-
-        Args:
-            resource: Source project tag to check.
-
-        Returns:
-            Destination project tag ID if it exists, None otherwise.
-        """
-        # Use base class helper method
-        additional_params = {"project_tag_name": resource.name}
-        return await self._check_resource_exists_by_name(
-            resource, "project_tags", additional_params=additional_params
-        )
-
     async def migrate_resource(self, resource: ProjectTag) -> str:
         """Migrate a single project tag to the destination.
 

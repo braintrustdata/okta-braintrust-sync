@@ -91,52 +91,6 @@ class ACLMigrator(ResourceMigrator[ACL]):
             self._logger.error("Failed to list source ACLs", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: ACL) -> str | None:
-        """Check if an ACL already exists in the destination.
-
-        ACLs are considered equivalent if they have the same:
-        - object_type and object_id (after ID mapping)
-        - user_id or group_id (after ID mapping)
-        - permission or role_id (after ID mapping)
-        - restrict_object_type
-
-        Args:
-            resource: Source ACL to check.
-
-        Returns:
-            Destination ACL ID if it exists, None otherwise.
-        """
-        try:
-            # ACLs need custom existence checking due to complex matching logic
-            # Use the existing custom implementation for now
-            acls = await self.dest_client.with_retry(
-                "list_dest_acls",
-                lambda: self.dest_client.client.acls.list_org(),
-            )
-
-            # Convert to list using base class helper
-            dest_acls = await self._handle_api_response_to_list(acls)
-
-            # Check for equivalent ACL after ID mapping
-            for dest_acl in dest_acls:
-                if await self._acls_equivalent(resource, dest_acl):
-                    self._logger.debug(
-                        "Found equivalent ACL in destination",
-                        source_id=resource.id,
-                        dest_id=dest_acl.id,
-                    )
-                    return dest_acl.id
-
-            return None
-
-        except Exception as e:
-            self._logger.warning(
-                "Error checking if ACL exists in destination",
-                error=str(e),
-                acl_id=resource.id,
-            )
-            return None
-
     async def _acls_equivalent(self, source_acl: ACL, dest_acl: ACL) -> bool:
         """Check if two ACLs are equivalent after ID mapping.
 

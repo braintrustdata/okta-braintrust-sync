@@ -49,27 +49,22 @@ class MigrationOrchestrator:
     ]
 
     # Project-scoped resources (migrated per project)
-    # Note: Prompts and functions have circular dependencies, so we handle them specially
     PROJECT_SCOPED_RESOURCES: ClassVar[list[tuple[str, type]]] = [
         ("datasets", DatasetMigrator),
         ("project_tags", ProjectTagMigrator),  # Only depend on projects, migrated early
         ("span_iframes", SpanIframeMigrator),  # No dependencies, project-scoped
         (
-            "prompts",
-            PromptMigrator,
-        ),  # First pass: prompts without function dependencies
-        (
             "functions",
             FunctionMigrator,
-        ),  # Functions (tools, scorers, tasks, LLMs) can depend on prompts from first pass
+        ),  # Functions (tools, scorers, tasks, LLMs) - all encompassing
+        (
+            "prompts",
+            PromptMigrator,
+        ),  # Prompts can depend on functions from previous step
         (
             "project_scores",
             ProjectScoreMigrator,
         ),  # Project scores can depend on functions for online scoring
-        (
-            "prompts_final",
-            PromptMigrator,
-        ),  # Second pass: prompts with function dependencies
         ("experiments", ExperimentMigrator),
         ("logs", LogsMigrator),
         ("views", ViewMigrator),
@@ -425,25 +420,15 @@ class MigrationOrchestrator:
 
         # Migrate project-scoped resources in dependency order
         for resource_name, migrator_class in self.PROJECT_SCOPED_RESOURCES:
-            # Handle special case of prompts_final - map back to prompts for filtering
-            filter_name = (
-                "prompts" if resource_name == "prompts_final" else resource_name
-            )
-
-            if filter_name not in resources_to_migrate:
+            # Filter project-scoped resources to migrate based on config
+            if resource_name not in resources_to_migrate:
                 self._logger.debug(f"Skipping {resource_name} (not in migration list)")
                 continue
 
             try:
-                # Special handling for prompts_final - only migrate prompts with dependencies
-                if resource_name == "prompts_final":
-                    self._logger.info(
-                        f"Migrating prompts (final pass with dependencies) for project {project_name}"
-                    )
-                else:
-                    self._logger.info(
-                        f"Migrating {resource_name} for project {project_name}"
-                    )
+                self._logger.info(
+                    f"Migrating {resource_name} for project {project_name}"
+                )
 
                 # Create migrator instance
                 migrator = migrator_class(
@@ -467,12 +452,6 @@ class MigrationOrchestrator:
                     shared_dependency_cache,
                 )
 
-                # For prompts_final, we need to enable dependency-aware migration
-                if resource_name == "prompts_final":
-                    # Set a flag to indicate this is the final pass for prompts
-                    if hasattr(migrator, "set_final_pass"):
-                        migrator.set_final_pass(True)
-
                 # Perform migration
                 resource_results = await migrator.migrate_all(source_project_id)
 
@@ -490,13 +469,8 @@ class MigrationOrchestrator:
                         new_mappings_count=len(new_mappings),
                     )
 
-                # Store results under the appropriate key
-                result_key = (
-                    resource_name
-                    if resource_name != "prompts_final"
-                    else "prompts_final"
-                )
-                project_results["resources"][result_key] = resource_results
+                # Store results
+                project_results["resources"][resource_name] = resource_results
 
                 # Aggregate results
                 project_results["total_resources"] += resource_results["total"]
@@ -505,22 +479,13 @@ class MigrationOrchestrator:
                 project_results["failed_resources"] += resource_results["failed"]
                 project_results["errors"].extend(resource_results["errors"])
 
-                if resource_name == "prompts_final":
-                    self._logger.info(
-                        f"Completed prompts (final pass) migration for project {project_name}",
-                        total=resource_results["total"],
-                        migrated=resource_results["migrated"],
-                        skipped=resource_results["skipped"],
-                        failed=resource_results["failed"],
-                    )
-                else:
-                    self._logger.info(
-                        f"Completed {resource_name} migration for project {project_name}",
-                        total=resource_results["total"],
-                        migrated=resource_results["migrated"],
-                        skipped=resource_results["skipped"],
-                        failed=resource_results["failed"],
-                    )
+                self._logger.info(
+                    f"Completed {resource_name} migration for project {project_name}",
+                    total=resource_results["total"],
+                    migrated=resource_results["migrated"],
+                    skipped=resource_results["skipped"],
+                    failed=resource_results["failed"],
+                )
 
             except Exception as e:
                 error_msg = f"Failed to migrate {resource_name}: {e}"
