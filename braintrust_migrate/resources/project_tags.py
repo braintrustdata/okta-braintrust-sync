@@ -14,7 +14,7 @@ class ProjectTagMigrator(ResourceMigrator[ProjectTag]):
     @property
     def resource_name(self) -> str:
         """Return the name of this resource type."""
-        return "project_tags"
+        return "ProjectTags"
 
     async def list_source_resources(
         self, project_id: str | None = None
@@ -39,21 +39,6 @@ class ProjectTagMigrator(ResourceMigrator[ProjectTag]):
         except Exception as e:
             self._logger.error("Failed to list source project tags", error=str(e))
             raise
-
-    async def resource_exists_in_dest(self, resource: ProjectTag) -> str | None:
-        """Check if a project tag already exists in the destination.
-
-        Args:
-            resource: Source project tag to check.
-
-        Returns:
-            Destination project tag ID if it exists, None otherwise.
-        """
-        # Use base class helper method
-        additional_params = {"project_tag_name": resource.name}
-        return await self._check_resource_exists_by_name(
-            resource, "project_tags", additional_params=additional_params
-        )
 
     async def migrate_resource(self, resource: ProjectTag) -> str:
         """Migrate a single project tag to the destination.
@@ -80,16 +65,10 @@ class ProjectTagMigrator(ResourceMigrator[ProjectTag]):
 
         try:
             # Create the project tag in the destination
-            create_data = {
-                "project_id": dest_project_id,
-                "name": resource.name,
-            }
+            create_data = self.serialize_resource_for_insert(resource)
 
-            # Add optional fields if they exist
-            if resource.description is not None:
-                create_data["description"] = resource.description
-            if resource.color is not None:
-                create_data["color"] = resource.color
+            # Override the project_id with the destination project ID
+            create_data["project_id"] = dest_project_id
 
             logger.info(
                 "Creating project tag in destination",

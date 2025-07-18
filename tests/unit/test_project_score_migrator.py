@@ -41,7 +41,7 @@ class TestProjectScoreMigrator:
 
     def test_resource_name(self, project_score_migrator):
         """Test that resource_name returns the correct value."""
-        assert project_score_migrator.resource_name == "project_scores"
+        assert project_score_migrator.resource_name == "ProjectScores"
 
     def test_get_resource_id(self, project_score_migrator, sample_project_score):
         """Test getting resource ID from a project score."""
@@ -127,100 +127,6 @@ class TestProjectScoreMigrator:
             await project_score_migrator.list_source_resources()
 
     @pytest.mark.asyncio
-    async def test_resource_exists_in_dest_true(
-        self, project_score_migrator, mock_dest_client, sample_project_score
-    ):
-        """Test checking if project score exists in destination (exists)."""
-        # Mock existing project score in destination
-        existing_score = Mock()
-        existing_score.name = "Test Score"
-        existing_score.project_id = "dest-project-789"
-
-        mock_response = Mock()
-        mock_response.objects = [existing_score]
-        mock_dest_client.with_retry.return_value = mock_response
-
-        # Call the method
-        result = await project_score_migrator.resource_exists_in_dest(
-            sample_project_score
-        )
-
-        # Verify the result
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_resource_exists_in_dest_false(
-        self, project_score_migrator, mock_dest_client, sample_project_score
-    ):
-        """Test checking if project score exists in destination (doesn't exist)."""
-        # Mock empty response
-        mock_response = Mock()
-        mock_response.objects = []
-        mock_dest_client.with_retry.return_value = mock_response
-
-        # Call the method
-        result = await project_score_migrator.resource_exists_in_dest(
-            sample_project_score
-        )
-
-        # Verify the result
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_resource_exists_in_dest_no_project_mapping(
-        self, project_score_migrator, sample_project_score
-    ):
-        """Test checking if project score exists when no project mapping exists."""
-        # Create a project score with unmapped project ID
-        sample_project_score.project_id = "unmapped-project"
-
-        # Call the method
-        result = await project_score_migrator.resource_exists_in_dest(
-            sample_project_score
-        )
-
-        # Verify the result
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_resource_exists_in_dest_async_iterator(
-        self, project_score_migrator, mock_dest_client, sample_project_score
-    ):
-        """Test checking if project score exists with async iterator response."""
-        existing_score = Mock()
-        existing_score.name = "Test Score"
-        existing_score.project_id = "dest-project-789"
-
-        async def async_iter():
-            yield existing_score
-
-        mock_response = async_iter()
-        mock_dest_client.with_retry.return_value = mock_response
-
-        # Call the method
-        result = await project_score_migrator.resource_exists_in_dest(
-            sample_project_score
-        )
-
-        # Verify the result
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_resource_exists_in_dest_error(
-        self, project_score_migrator, mock_dest_client, sample_project_score
-    ):
-        """Test error handling in resource_exists_in_dest."""
-        mock_dest_client.with_retry.side_effect = Exception("API Error")
-
-        # Call the method
-        result = await project_score_migrator.resource_exists_in_dest(
-            sample_project_score
-        )
-
-        # Should return False on error
-        assert result is False
-
-    @pytest.mark.asyncio
     async def test_migrate_resource_success(
         self, project_score_migrator, mock_dest_client, sample_project_score
     ):
@@ -244,17 +150,18 @@ class TestProjectScoreMigrator:
         self, project_score_migrator, mock_dest_client, sample_project_score
     ):
         """Test project score migration with config containing function references."""
-        # Set up project score with config
-        online_config = Mock()
-        online_config.sampling_rate = 0.5
-        online_config.scorers = [
-            {"type": "function", "id": "function-123"},
-            {"type": "global", "name": "global_scorer"},
-        ]
-
+        # Set up project score with config that has to_dict method
         config = Mock()
-        config.online = online_config
-        config.multi_select = True
+        config.to_dict.return_value = {
+            "online": {
+                "sampling_rate": 0.5,
+                "scorers": [
+                    {"type": "function", "id": "function-123"},
+                    {"type": "global", "name": "global_scorer"},
+                ],
+            },
+            "multi_select": True,
+        }
 
         sample_project_score.config = config
 
@@ -268,6 +175,11 @@ class TestProjectScoreMigrator:
 
         # Verify the result
         assert result == "new-score-456"
+
+        # Verify that create was called with the resolved config
+        mock_dest_client.with_retry.assert_called_once()
+        call_args = mock_dest_client.with_retry.call_args[0]
+        assert call_args[0] == "create_project_score"
 
     @pytest.mark.asyncio
     async def test_migrate_resource_no_project_mapping(
@@ -329,7 +241,9 @@ class TestProjectScoreMigrator:
     @pytest.mark.asyncio
     async def test_resolve_config_dependencies_no_online(self, project_score_migrator):
         """Test resolving config dependencies when no online config exists."""
-        config = {"multi_select": True}
+        config = Mock()
+        config.to_dict.return_value = {"multi_select": True}
+
         result = await project_score_migrator._resolve_config_dependencies(config)
         assert result == {"multi_select": True}
 
@@ -338,13 +252,21 @@ class TestProjectScoreMigrator:
         self, project_score_migrator
     ):
         """Test resolving config dependencies with scorer functions."""
-        config = {
+        # Create mock scorer objects with to_dict methods (as they would be in production)
+        scorer1 = Mock()
+        scorer1.to_dict.return_value = {"type": "function", "id": "function-123"}
+
+        scorer2 = Mock()
+        scorer2.to_dict.return_value = {"type": "global", "name": "global_scorer"}
+
+        config = Mock()
+        config.to_dict.return_value = {
             "online": {
                 "sampling_rate": 0.5,
                 "scorers": [
-                    {"type": "function", "id": "function-123"},
-                    {"type": "global", "name": "global_scorer"},
-                ],
+                    scorer1,
+                    scorer2,
+                ],  # These are still objects with to_dict methods
             }
         }
 
@@ -362,15 +284,23 @@ class TestProjectScoreMigrator:
         self, project_score_migrator
     ):
         """Test resolving function reference of type 'function'."""
-        function_ref = {"type": "function", "id": "function-123"}
-        result = await project_score_migrator._resolve_function_reference(function_ref)
+        function_ref = Mock()
+        function_ref.to_dict.return_value = {"type": "function", "id": "function-123"}
+
+        result = project_score_migrator._resolve_function_reference_generic(
+            function_ref
+        )
         assert result == {"type": "function", "id": "dest-function-456"}
 
     @pytest.mark.asyncio
     async def test_resolve_function_reference_global_type(self, project_score_migrator):
         """Test resolving function reference of type 'global'."""
-        function_ref = {"type": "global", "name": "global_scorer"}
-        result = await project_score_migrator._resolve_function_reference(function_ref)
+        function_ref = Mock()
+        function_ref.to_dict.return_value = {"type": "global", "name": "global_scorer"}
+
+        result = project_score_migrator._resolve_function_reference_generic(
+            function_ref
+        )
         assert result == {"type": "global", "name": "global_scorer"}
 
     @pytest.mark.asyncio
@@ -378,8 +308,15 @@ class TestProjectScoreMigrator:
         self, project_score_migrator
     ):
         """Test resolving function reference with unmapped function ID."""
-        function_ref = {"type": "function", "id": "unmapped-function"}
-        result = await project_score_migrator._resolve_function_reference(function_ref)
+        function_ref = Mock()
+        function_ref.to_dict.return_value = {
+            "type": "function",
+            "id": "unmapped-function",
+        }
+
+        result = project_score_migrator._resolve_function_reference_generic(
+            function_ref
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -387,14 +324,18 @@ class TestProjectScoreMigrator:
         self, project_score_migrator
     ):
         """Test resolving function reference with unknown type."""
-        function_ref = {"type": "unknown", "id": "some-id"}
-        result = await project_score_migrator._resolve_function_reference(function_ref)
+        function_ref = Mock()
+        function_ref.to_dict.return_value = {"type": "unknown", "id": "some-id"}
+
+        result = project_score_migrator._resolve_function_reference_generic(
+            function_ref
+        )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_resolve_function_reference_none(self, project_score_migrator):
         """Test resolving None function reference."""
-        result = await project_score_migrator._resolve_function_reference(None)
+        result = project_score_migrator._resolve_function_reference_generic(None)
         assert result is None
 
     @pytest.mark.asyncio
@@ -444,30 +385,3 @@ class TestProjectScoreMigrator:
             sample_project_score
         )
         assert dependencies == ["project-456"]
-
-    def test_get_checksum(self, project_score_migrator, sample_project_score):
-        """Test generating checksum for a project score."""
-        checksum = project_score_migrator.get_checksum(sample_project_score)
-        assert isinstance(checksum, str)
-        assert len(checksum) > 0
-
-        # Test that same resource produces same checksum
-        checksum2 = project_score_migrator.get_checksum(sample_project_score)
-        assert checksum == checksum2
-
-    def test_get_checksum_different_resources(
-        self, project_score_migrator, sample_project_score
-    ):
-        """Test that different project scores produce different checksums."""
-        checksum1 = project_score_migrator.get_checksum(sample_project_score)
-
-        # Create a different project score
-        different_score = Mock()
-        different_score.name = "Different Score"
-        different_score.score_type = "categorical"
-        different_score.description = "Different description"
-        different_score.categories = [{"name": "Good", "value": 1.0}]
-        different_score.config = {"multi_select": False}
-
-        checksum2 = project_score_migrator.get_checksum(different_score)
-        assert checksum1 != checksum2

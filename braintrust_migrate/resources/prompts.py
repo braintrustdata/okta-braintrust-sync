@@ -8,64 +8,10 @@ from braintrust_migrate.resources.base import ResourceMigrator
 class PromptMigrator(ResourceMigrator[Prompt]):
     """Migrator for Braintrust prompts."""
 
-    def __init__(self, *args, **kwargs):
-        """Initialize the prompt migrator."""
-        super().__init__(*args, **kwargs)
-        self._final_pass = False
-
-    def set_final_pass(self, final_pass: bool) -> None:
-        """Set whether this is the final pass for prompt migration.
-
-        In the first pass, we only migrate prompts without dependencies.
-        In the final pass, we migrate prompts with dependencies.
-
-        Args:
-            final_pass: True if this is the final pass.
-        """
-        self._final_pass = final_pass
-        self._logger.debug(
-            "Set prompt migration pass",
-            final_pass=final_pass,
-        )
-
     @property
     def resource_name(self) -> str:
         """Human-readable name for this resource type."""
         return "Prompts"
-
-    async def should_migrate_resource(self, resource: Prompt) -> bool:
-        """Determine if a resource should be migrated in this pass.
-
-        Args:
-            resource: Prompt to check.
-
-        Returns:
-            True if the resource should be migrated in this pass.
-        """
-        dependencies = await self.get_dependencies(resource)
-        has_dependencies = len(dependencies) > 0
-
-        if self._final_pass:
-            # Final pass: only migrate prompts WITH dependencies
-            should_migrate = has_dependencies
-            if should_migrate:
-                self._logger.debug(
-                    "Prompt scheduled for final pass (has dependencies)",
-                    prompt_id=resource.id,
-                    prompt_name=resource.name,
-                    dependencies=dependencies,
-                )
-        else:
-            # First pass: only migrate prompts WITHOUT dependencies
-            should_migrate = not has_dependencies
-            if should_migrate:
-                self._logger.debug(
-                    "Prompt scheduled for first pass (no dependencies)",
-                    prompt_id=resource.id,
-                    prompt_name=resource.name,
-                )
-
-        return should_migrate
 
     async def get_dependencies(self, resource: Prompt) -> list[str]:
         """Get list of resource IDs that this prompt depends on.
@@ -86,22 +32,8 @@ class PromptMigrator(ResourceMigrator[Prompt]):
         if hasattr(resource, "prompt_data") and resource.prompt_data:
             prompt_data = resource.prompt_data
 
-            # Check for tool function dependencies
-            if hasattr(prompt_data, "tool_functions") and prompt_data.tool_functions:
-                for tool_func in prompt_data.tool_functions:
-                    if (
-                        hasattr(tool_func, "type")
-                        and hasattr(tool_func, "id")
-                        and tool_func.type == "function"
-                    ):
-                        dependencies.append(tool_func.id)
-                        self._logger.debug(
-                            "Found function dependency",
-                            prompt_id=resource.id,
-                            prompt_name=resource.name,
-                            function_id=tool_func.id,
-                        )
-                    # Note: We skip "global" type functions as they don't need migration
+            # Not checking for tool_functions because they are already handled by the
+            # function migrator
 
             # Check for prompt origin dependencies
             if hasattr(prompt_data, "origin") and prompt_data.origin:
@@ -146,24 +78,6 @@ class PromptMigrator(ResourceMigrator[Prompt]):
             self._logger.error("Failed to list source prompts", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: Prompt) -> str | None:
-        """Check if a prompt already exists in the destination.
-
-        Args:
-            resource: Source prompt to check.
-
-        Returns:
-            Destination prompt ID if it exists, None otherwise.
-        """
-        # Use base class helper method with slug matching
-        additional_params = {"prompt_name": resource.name}
-        return await self._check_resource_exists_by_name(
-            resource,
-            "prompts",
-            additional_match_fields=["slug"],
-            additional_params=additional_params,
-        )
-
     def _resolve_prompt_data_dependencies(self, prompt_data: dict) -> dict:
         """Resolve dependencies within prompt_data and return updated version.
 
@@ -181,45 +95,39 @@ class PromptMigrator(ResourceMigrator[Prompt]):
 
         resolved_data = copy.deepcopy(prompt_data)
 
-        # Resolve tool_functions dependencies
+        # Resolve tool_functions dependencies using base class utility
         if resolved_data.get("tool_functions"):
             resolved_tool_functions = []
             for tool_func in resolved_data["tool_functions"]:
-                if (
-                    isinstance(tool_func, dict)
-                    and tool_func.get("type") == "function"
-                    and "id" in tool_func
+                # Use base class generic function resolver for all function types
+                resolved_function = self._resolve_function_reference_generic(tool_func)
+                if resolved_function:
+                    resolved_tool_functions.append(resolved_function)
+                elif (
+                    isinstance(tool_func, dict) and tool_func.get("type") == "function"
                 ):
-                    # Resolve function ID to destination ID
-                    dest_function_id = self.state.id_mapping.get(tool_func["id"])
-                    if dest_function_id:
-                        resolved_tool_func = tool_func.copy()
-                        resolved_tool_func["id"] = dest_function_id
-                        resolved_tool_functions.append(resolved_tool_func)
-
-                    else:
-                        self._logger.warning(
-                            "Could not resolve tool function dependency",
-                            source_function_id=tool_func["id"],
-                        )
-                        # Skip this tool function rather than break the prompt
+                    # Only warn for function types that failed to resolve
+                    self._logger.warning(
+                        "Could not resolve tool function dependency",
+                        source_function_id=tool_func.get("id", "unknown"),
+                    )
+                    # Skip this tool function rather than break the prompt
                 else:
-                    # Keep global functions and other types as-is
+                    # Keep non-function types (like global functions) as-is
                     resolved_tool_functions.append(tool_func)
 
             resolved_data["tool_functions"] = resolved_tool_functions
 
-        # Resolve origin prompt dependencies
-        if resolved_data.get("origin"):
+        # Resolve origin prompt dependencies using simple ID mapping
+        if resolved_data.get("origin") and isinstance(resolved_data["origin"], dict):
             origin = resolved_data["origin"]
-            if isinstance(origin, dict) and "prompt_id" in origin:
+            if "prompt_id" in origin:
                 dest_prompt_id = self.state.id_mapping.get(origin["prompt_id"])
                 if dest_prompt_id:
                     resolved_data["origin"]["prompt_id"] = dest_prompt_id
                     # Also update project_id if present
                     if "project_id" in origin:
                         resolved_data["origin"]["project_id"] = self.dest_project_id
-
                 else:
                     self._logger.warning(
                         "Could not resolve prompt origin dependency",
@@ -250,31 +158,15 @@ class PromptMigrator(ResourceMigrator[Prompt]):
             project_id=resource.project_id,
         )
 
-        # Create prompt in destination
-        create_params = {
-            "name": resource.name,
-            "slug": resource.slug,
-            "project_id": self.dest_project_id,  # Use destination project ID
-        }
+        # Create prompt in destination using base class serialization
+        create_params = self.serialize_resource_for_insert(resource)
 
-        # Copy optional fields if they exist
-        if hasattr(resource, "description") and resource.description:
-            create_params["description"] = resource.description
-
-        if hasattr(resource, "tags") and resource.tags:
-            create_params["tags"] = resource.tags
-
-        if hasattr(resource, "function_type") and resource.function_type:
-            create_params["function_type"] = resource.function_type
+        # Override the project_id to use destination project
+        create_params["project_id"] = self.dest_project_id
 
         # Handle prompt_data with dependency resolution
         if hasattr(resource, "prompt_data") and resource.prompt_data:
-            # Convert to dict if needed for processing
-            prompt_data_dict = resource.prompt_data
-            if hasattr(resource.prompt_data, "__dict__"):
-                prompt_data_dict = resource.prompt_data.__dict__
-            elif hasattr(resource.prompt_data, "model_dump"):
-                prompt_data_dict = resource.prompt_data.model_dump()
+            prompt_data_dict = resource.prompt_data.to_dict()
 
             # Resolve dependencies in prompt_data
             resolved_prompt_data = self._resolve_prompt_data_dependencies(

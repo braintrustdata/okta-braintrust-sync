@@ -67,29 +67,6 @@ class GroupMigrator(ResourceMigrator[Group]):
             self._logger.error("Failed to list source groups", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: Group) -> str | None:
-        """Check if a group already exists in the destination.
-
-        Args:
-            resource: Source group to check.
-
-        Returns:
-            Destination group ID if it exists, None otherwise.
-        """
-        # Use base class helper method for organization-scoped resources
-        additional_params = {"group_name": resource.name}
-        # Override dest_project_id temporarily since groups are org-scoped
-        original_dest_project_id = self.dest_project_id
-        self.dest_project_id = None
-        try:
-            result = await self._check_resource_exists_by_name(
-                resource, "groups", additional_params=additional_params
-            )
-            return result
-        finally:
-            # Restore original dest_project_id
-            self.dest_project_id = original_dest_project_id
-
     async def migrate_resource(self, resource: Group) -> str:
         """Migrate a single group from source to destination.
 
@@ -109,14 +86,8 @@ class GroupMigrator(ResourceMigrator[Group]):
             org_id=getattr(resource, "org_id", None),
         )
 
-        # Create group in destination
-        create_params = {
-            "name": resource.name,
-        }
-
-        # Copy optional fields if they exist
-        if hasattr(resource, "description") and resource.description:
-            create_params["description"] = resource.description
+        # Create group in destination using base class serialization
+        create_params = self.serialize_resource_for_insert(resource)
 
         # Handle member_groups with dependency resolution
         if hasattr(resource, "member_groups") and resource.member_groups:
@@ -152,6 +123,8 @@ class GroupMigrator(ResourceMigrator[Group]):
                 group_name=resource.name,
                 user_count=len(resource.member_users),
             )
+            # Remove member_users from create_params to avoid trying to migrate them
+            create_params.pop("member_users", None)
 
         dest_group = await self.dest_client.with_retry(
             "create_group",

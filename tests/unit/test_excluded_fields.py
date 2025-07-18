@@ -1,4 +1,4 @@
-"""Unit tests for excluded_fields_for_insert property overrides."""
+"""Unit tests for OpenAPI-based field inclusion in migrators."""
 
 import pytest
 
@@ -7,172 +7,164 @@ from braintrust_migrate.resources.datasets import DatasetMigrator
 from braintrust_migrate.resources.experiments import ExperimentMigrator
 from braintrust_migrate.resources.functions import FunctionMigrator
 from braintrust_migrate.resources.logs import LogsMigrator
+from braintrust_migrate.resources.prompts import PromptMigrator
 
 
 @pytest.mark.asyncio
-class TestExcludedFieldsOverrides:
-    """Test that migrators properly override excluded_fields_for_insert."""
+class TestOpenAPIFieldInclusion:
+    """Test that migrators use OpenAPI-based field inclusion."""
 
-    async def test_base_migrator_excluded_fields(
+    async def test_base_migrator_allowed_fields_fallback(
         self,
         mock_source_client,
         mock_dest_client,
         temp_checkpoint_dir,
     ):
-        """Test that base migrator has expected excluded fields."""
+        """Test that base migrator returns None for unknown resource types."""
 
         # Create a simple concrete implementation for testing
         class TestMigrator(ResourceMigrator):
             @property
             def resource_name(self) -> str:
-                return "Test"
+                return "UnknownResources"  # This won't exist in OpenAPI spec
 
             async def list_source_resources(self, project_id=None):
                 return []
 
-            async def resource_exists_in_dest(self, resource):
-                return None
-
             async def migrate_resource(self, resource):
-                return "test_id"
+                return "test-id"
 
         migrator = TestMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
         )
 
-        expected_base_fields = {
-            "id",
-            "created",
-            "_xact_id",
-            "xact_id",  # Alternative naming
-            "_object_delete",
-            "_pagination_key",
-            "comparison_key",
-            "project_id",
-            "org_id",  # Added to base class
-        }
+        # Should return None for unknown resource type (no schema found)
+        assert migrator.allowed_fields_for_insert is None
 
-        assert migrator.excluded_fields_for_insert == expected_base_fields
-
-    async def test_dataset_migrator_excluded_fields(
+    async def test_prompt_migrator_uses_openapi_fields(
         self,
         mock_source_client,
         mock_dest_client,
         temp_checkpoint_dir,
     ):
-        """Test that DatasetMigrator includes dataset_id in excluded fields."""
+        """Test that PromptMigrator uses OpenAPI-determined allowed fields."""
+        migrator = PromptMigrator(
+            mock_source_client, mock_dest_client, temp_checkpoint_dir
+        )
+
+        # Should have allowed fields from OpenAPI spec
+        allowed_fields = migrator.allowed_fields_for_insert
+        expected_allowed = {
+            "description",
+            "prompt_data",
+            "slug",
+            "tags",
+            "function_type",
+            "project_id",
+            "name",
+        }
+        assert allowed_fields == expected_allowed
+
+    async def test_dataset_migrator_uses_openapi_fields(
+        self,
+        mock_source_client,
+        mock_dest_client,
+        temp_checkpoint_dir,
+    ):
+        """Test that DatasetMigrator uses OpenAPI-determined allowed fields."""
         migrator = DatasetMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
         )
 
-        # Should include all base fields plus dataset_id
-        expected_fields = {
-            "id",
-            "created",
-            "_xact_id",
-            "xact_id",  # Alternative naming
-            "_object_delete",
-            "_pagination_key",
-            "comparison_key",
+        # Should have allowed fields from OpenAPI spec
+        allowed_fields = migrator.allowed_fields_for_insert
+        expected_allowed = {
+            "metadata",
+            "name",
+            "description",
             "project_id",
-            "org_id",  # Added to base class
-            "dataset_id",  # Added by DatasetMigrator
         }
+        assert allowed_fields == expected_allowed
 
-        assert migrator.excluded_fields_for_insert == expected_fields
-        assert "dataset_id" in migrator.excluded_fields_for_insert
-
-    async def test_experiment_migrator_excluded_fields(
+    async def test_experiment_migrator_uses_openapi_fields(
         self,
         mock_source_client,
         mock_dest_client,
         temp_checkpoint_dir,
     ):
-        """Test that ExperimentMigrator includes experiment_id in excluded fields."""
+        """Test that ExperimentMigrator uses OpenAPI-determined allowed fields."""
         migrator = ExperimentMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
         )
 
-        # Should include all base fields plus experiment_id
-        expected_fields = {
-            "id",
-            "created",
-            "_xact_id",
-            "xact_id",  # Alternative naming
-            "_object_delete",
-            "_pagination_key",
-            "comparison_key",
+        # Should have allowed fields from OpenAPI spec
+        allowed_fields = migrator.allowed_fields_for_insert
+        expected_allowed = {
+            "ensure_new",
+            "public",
+            "base_exp_id",
+            "repo_info",
+            "metadata",
+            "dataset_version",
+            "description",
+            "dataset_id",
             "project_id",
-            "org_id",  # Added to base class
-            "experiment_id",  # Added by ExperimentMigrator
+            "name",
+            "tags",
         }
+        assert allowed_fields == expected_allowed
 
-        assert migrator.excluded_fields_for_insert == expected_fields
-        assert "experiment_id" in migrator.excluded_fields_for_insert
-
-    async def test_function_migrator_excluded_fields(
+    async def test_function_migrator_uses_openapi_fields(
         self,
         mock_source_client,
         mock_dest_client,
         temp_checkpoint_dir,
     ):
-        """Test that FunctionMigrator includes log_id in excluded fields."""
+        """Test that FunctionMigrator uses OpenAPI-determined allowed fields."""
         migrator = FunctionMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
         )
 
-        # Should include all base fields plus log_id
-        expected_fields = {
-            "id",
-            "created",
-            "_xact_id",
-            "xact_id",  # Alternative naming
-            "_object_delete",
-            "_pagination_key",
-            "comparison_key",
+        # Should have allowed fields from OpenAPI spec
+        allowed_fields = migrator.allowed_fields_for_insert
+        expected_allowed = {
+            "name",
             "project_id",
-            "org_id",  # Added to base class
-            "log_id",  # Added by FunctionMigrator
+            "slug",
+            "function_data",
+            "origin",
+            "prompt_data",
+            "tags",
+            "function_schema",
+            "description",
+            "function_type",
         }
+        assert allowed_fields == expected_allowed
 
-        assert migrator.excluded_fields_for_insert == expected_fields
-        assert "log_id" in migrator.excluded_fields_for_insert
-
-    async def test_logs_migrator_excluded_fields(
+    async def test_logs_migrator_uses_openapi_fields(
         self,
         mock_source_client,
         mock_dest_client,
         temp_checkpoint_dir,
     ):
-        """Test that LogsMigrator includes log_id in excluded fields."""
+        """Test that LogsMigrator uses OpenAPI-determined allowed fields."""
         migrator = LogsMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
         )
 
-        # Should include all base fields plus log_id
-        expected_fields = {
-            "id",
-            "created",
-            "_xact_id",
-            "xact_id",  # Alternative naming
-            "_object_delete",
-            "_pagination_key",
-            "comparison_key",
-            "project_id",
-            "org_id",  # Added to base class
-            "log_id",  # Added by LogsMigrator
-        }
+        # Should have allowed fields from OpenAPI spec for InsertProjectLogsEvent
+        allowed_fields = migrator.allowed_fields_for_insert
+        assert allowed_fields is not None
+        assert isinstance(allowed_fields, set)
+        assert len(allowed_fields) > 0
 
-        assert migrator.excluded_fields_for_insert == expected_fields
-        assert "log_id" in migrator.excluded_fields_for_insert
-
-    async def test_excluded_fields_inheritance(
+    async def test_all_migrators_use_consistent_approach(
         self,
         mock_source_client,
         mock_dest_client,
         temp_checkpoint_dir,
     ):
-        """Test that the overrides properly inherit from base class."""
+        """Test that all migrators use the same OpenAPI-based approach."""
         dataset_migrator = DatasetMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
         )
@@ -185,37 +177,54 @@ class TestExcludedFieldsOverrides:
         logs_migrator = LogsMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
         )
+        prompt_migrator = PromptMigrator(
+            mock_source_client, mock_dest_client, temp_checkpoint_dir
+        )
 
-        # All specialized migrators should include base fields
-        base_fields = {
-            "id",
-            "created",
-            "_xact_id",
-            "xact_id",  # Alternative naming
-            "_object_delete",
-            "_pagination_key",
-            "comparison_key",
-            "project_id",
-            "org_id",  # Added to base class
-        }
+        # All migrators should either have allowed fields (if schema exists) or None
+        for migrator in [
+            dataset_migrator,
+            experiment_migrator,
+            function_migrator,
+            logs_migrator,
+            prompt_migrator,
+        ]:
+            allowed_fields = migrator.allowed_fields_for_insert
+            assert allowed_fields is None or isinstance(allowed_fields, set)
 
-        assert base_fields.issubset(dataset_migrator.excluded_fields_for_insert)
-        assert base_fields.issubset(experiment_migrator.excluded_fields_for_insert)
-        assert base_fields.issubset(function_migrator.excluded_fields_for_insert)
-        assert base_fields.issubset(logs_migrator.excluded_fields_for_insert)
+            # If they have allowed fields, they should be non-empty
+            if allowed_fields is not None:
+                assert len(allowed_fields) > 0
 
-        # But each should have their specific additional field
-        assert "dataset_id" in dataset_migrator.excluded_fields_for_insert
-        assert "dataset_id" not in experiment_migrator.excluded_fields_for_insert
-        assert "dataset_id" not in function_migrator.excluded_fields_for_insert
-        assert "dataset_id" not in logs_migrator.excluded_fields_for_insert
+        # Known schemas should have allowed fields
+        assert prompt_migrator.allowed_fields_for_insert is not None
+        assert dataset_migrator.allowed_fields_for_insert is not None
+        assert experiment_migrator.allowed_fields_for_insert is not None
+        assert function_migrator.allowed_fields_for_insert is not None
 
-        assert "experiment_id" in experiment_migrator.excluded_fields_for_insert
-        assert "experiment_id" not in dataset_migrator.excluded_fields_for_insert
-        assert "experiment_id" not in function_migrator.excluded_fields_for_insert
-        assert "experiment_id" not in logs_migrator.excluded_fields_for_insert
+        # LogsMigrator now also has allowed fields (InsertProjectLogsEvent schema)
+        assert logs_migrator.allowed_fields_for_insert is not None
 
-        assert "log_id" in function_migrator.excluded_fields_for_insert
-        assert "log_id" in logs_migrator.excluded_fields_for_insert
-        assert "log_id" not in dataset_migrator.excluded_fields_for_insert
-        assert "log_id" not in experiment_migrator.excluded_fields_for_insert
+    async def test_resource_name_to_schema_mapping(
+        self,
+        mock_source_client,
+        mock_dest_client,
+        temp_checkpoint_dir,
+    ):
+        """Test that resource names are correctly mapped to schema names."""
+        # Test the resource name conversion logic
+        prompt_migrator = PromptMigrator(
+            mock_source_client, mock_dest_client, temp_checkpoint_dir
+        )
+
+        # "Prompts" -> "Prompt" -> "CreatePrompt" schema
+        assert prompt_migrator.resource_name == "Prompts"
+        assert prompt_migrator.allowed_fields_for_insert is not None
+
+        dataset_migrator = DatasetMigrator(
+            mock_source_client, mock_dest_client, temp_checkpoint_dir
+        )
+
+        # "Datasets" -> "Dataset" -> "CreateDataset" schema
+        assert dataset_migrator.resource_name == "Datasets"
+        assert dataset_migrator.allowed_fields_for_insert is not None

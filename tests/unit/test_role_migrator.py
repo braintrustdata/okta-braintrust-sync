@@ -21,6 +21,20 @@ def role_with_inheritance():
     role.deleted_at = None
     role.member_permissions = [{"permission": "read", "restrict_object_type": None}]
     role.member_roles = ["role-parent-1", "role-parent-2"]
+
+    # Mock the to_dict method
+    role.to_dict.return_value = {
+        "id": "role-child-123",
+        "name": "Child Role",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A role that inherits from parent roles",
+        "deleted_at": None,
+        "member_permissions": [{"permission": "read", "restrict_object_type": None}],
+        "member_roles": ["role-parent-1", "role-parent-2"],
+    }
+
     return role
 
 
@@ -40,6 +54,23 @@ def role_without_inheritance():
         {"permission": "update", "restrict_object_type": "experiment"},
     ]
     role.member_roles = None
+
+    # Mock the to_dict method
+    role.to_dict.return_value = {
+        "id": "role-independent-456",
+        "name": "Independent Role",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A role without inheritance",
+        "deleted_at": None,
+        "member_permissions": [
+            {"permission": "create", "restrict_object_type": "project"},
+            {"permission": "update", "restrict_object_type": "experiment"},
+        ],
+        "member_roles": None,
+    }
+
     return role
 
 
@@ -191,95 +222,6 @@ class TestRoleMigrator:
         with pytest.raises(Exception, match="API Error"):
             await migrator.list_source_resources()
 
-    async def test_resource_exists_in_dest_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_role,
-    ):
-        """Test finding existing role in destination."""
-        # Mock existing role in destination
-        dest_role = Mock(spec=Role)
-        dest_role.id = "dest-role-123"
-        dest_role.name = "Test Role"
-
-        mock_response = Mock()
-        mock_response.objects = [dest_role]
-        mock_dest_client.with_retry.return_value = mock_response
-
-        migrator = RoleMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_role)
-
-        assert result == "dest-role-123"
-
-    async def test_resource_exists_in_dest_not_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_role,
-    ):
-        """Test role not found in destination."""
-        mock_response = Mock()
-        mock_response.objects = []
-        mock_dest_client.with_retry.return_value = mock_response
-
-        migrator = RoleMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_role)
-
-        assert result is None
-
-    async def test_resource_exists_in_dest_async_iterator(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_role,
-    ):
-        """Test finding existing role with async iterator response."""
-        # Mock existing role in destination
-        dest_role = Mock(spec=Role)
-        dest_role.id = "dest-role-123"
-        dest_role.name = "Test Role"
-
-        async def async_iter():
-            yield dest_role
-
-        mock_dest_client.with_retry.return_value = async_iter()
-
-        migrator = RoleMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_role)
-
-        assert result == "dest-role-123"
-
-    async def test_resource_exists_in_dest_error(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_role,
-    ):
-        """Test error handling in resource_exists_in_dest."""
-        mock_dest_client.with_retry.side_effect = Exception("API Error")
-
-        migrator = RoleMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_role)
-
-        assert result is None
-
     async def test_migrate_resource_success_full_fields(
         self,
         mock_source_client,
@@ -317,6 +259,15 @@ class TestRoleMigrator:
         minimal_role.description = None
         minimal_role.member_permissions = None
         minimal_role.member_roles = None
+
+        # Mock the to_dict method
+        minimal_role.to_dict.return_value = {
+            "id": "role-minimal-123",
+            "name": "Minimal Role",
+            "description": None,
+            "member_permissions": None,
+            "member_roles": None,
+        }
 
         # Mock successful role creation
         created_role = Mock(spec=Role)

@@ -49,6 +49,20 @@ def experiment_with_base_exp():
     experiment.public = True
     experiment.metadata = {"type": "comparison"}
     experiment.repo_info = None
+
+    # Mock the to_dict method to return a proper dictionary
+    experiment.to_dict.return_value = {
+        "id": "exp-123",
+        "name": "Comparison Experiment",
+        "project_id": "project-456",
+        "description": "An experiment with baseline comparison",
+        "base_exp_id": "base-exp-789",
+        "dataset_id": None,
+        "dataset_version": None,
+        "public": True,
+        "metadata": {"type": "comparison"},
+        "repo_info": None,
+    }
     return experiment
 
 
@@ -66,6 +80,20 @@ def experiment_with_dataset():
     experiment.public = False
     experiment.metadata = {"dataset_linked": True}
     experiment.repo_info = None
+
+    # Mock the to_dict method to return a proper dictionary
+    experiment.to_dict.return_value = {
+        "id": "exp-456",
+        "name": "Dataset Experiment",
+        "project_id": "project-456",
+        "description": "An experiment linked to a dataset",
+        "base_exp_id": None,
+        "dataset_id": "dataset-123",
+        "dataset_version": "v2.1",
+        "public": False,
+        "metadata": {"dataset_linked": True},
+        "repo_info": None,
+    }
     return experiment
 
 
@@ -83,6 +111,20 @@ def experiment_with_both_deps():
     experiment.public = True
     experiment.metadata = {"full_deps": True}
     experiment.repo_info = None
+
+    # Mock the to_dict method to return a proper dictionary
+    experiment.to_dict.return_value = {
+        "id": "exp-789",
+        "name": "Full Dependencies Experiment",
+        "project_id": "project-456",
+        "description": "An experiment with both dependencies",
+        "base_exp_id": "base-exp-999",
+        "dataset_id": "dataset-456",
+        "dataset_version": "v1.0",
+        "public": True,
+        "metadata": {"full_deps": True},
+        "repo_info": None,
+    }
     return experiment
 
 
@@ -100,6 +142,20 @@ def experiment_without_dependencies():
     experiment.public = True
     experiment.metadata = {"independent": True}
     experiment.repo_info = None
+
+    # Mock the to_dict method to return a proper dictionary
+    experiment.to_dict.return_value = {
+        "id": "exp-999",
+        "name": "Independent Experiment",
+        "project_id": "project-456",
+        "description": "An experiment without dependencies",
+        "base_exp_id": None,
+        "dataset_id": None,
+        "dataset_version": None,
+        "public": True,
+        "metadata": {"independent": True},
+        "repo_info": None,
+    }
     return experiment
 
 

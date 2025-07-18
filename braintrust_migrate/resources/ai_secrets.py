@@ -20,7 +20,7 @@ class AISecretMigrator(ResourceMigrator[AISecret]):
     @property
     def resource_name(self) -> str:
         """Human-readable name for this resource type."""
-        return "AI Secrets"
+        return "AISecrets"
 
     async def get_dependencies(self, resource: AISecret) -> list[str]:
         """Get list of resource IDs that this AI secret depends on.
@@ -57,29 +57,6 @@ class AISecretMigrator(ResourceMigrator[AISecret]):
             self._logger.error("Failed to list source AI secrets", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: AISecret) -> str | None:
-        """Check if an AI secret already exists in the destination.
-
-        Args:
-            resource: Source AI secret to check.
-
-        Returns:
-            Destination AI secret ID if it exists, None otherwise.
-        """
-        # Use base class helper method for organization-scoped resources
-        additional_params = {"ai_secret_name": resource.name}
-        # Override dest_project_id temporarily since AI secrets are org-scoped
-        original_dest_project_id = self.dest_project_id
-        self.dest_project_id = None
-        try:
-            result = await self._check_resource_exists_by_name(
-                resource, "ai_secrets", additional_params=additional_params
-            )
-            return result
-        finally:
-            # Restore original dest_project_id
-            self.dest_project_id = original_dest_project_id
-
     async def migrate_resource(self, resource: AISecret) -> str:
         """Migrate a single AI secret from source to destination.
 
@@ -100,17 +77,8 @@ class AISecretMigrator(ResourceMigrator[AISecret]):
             org_id=getattr(resource, "org_id", None),
         )
 
-        # Create AI secret in destination
-        create_params = {
-            "name": resource.name,
-        }
-
-        # Copy optional fields if they exist
-        if hasattr(resource, "type") and resource.type:
-            create_params["type"] = resource.type
-
-        if hasattr(resource, "metadata") and resource.metadata:
-            create_params["metadata"] = resource.metadata
+        # Create AI secret in destination using base class serialization
+        create_params = self.serialize_resource_for_insert(resource)
 
         # Note: We intentionally do NOT copy the secret value itself
         # for security reasons. The actual secret values must be manually

@@ -2,7 +2,7 @@
 
 from braintrust_api.types import ProjectLogsEvent
 
-from braintrust_migrate.resources.base import ResourceMigrator
+from braintrust_migrate.resources.base import MigrationResult, ResourceMigrator
 
 
 class LogsMigrator(ResourceMigrator[ProjectLogsEvent]):
@@ -12,15 +12,6 @@ class LogsMigrator(ResourceMigrator[ProjectLogsEvent]):
     def resource_name(self) -> str:
         """Human-readable name for this resource type."""
         return "Logs"
-
-    @property
-    def excluded_fields_for_insert(self) -> set[str]:
-        """Fields to exclude when converting log events for API insertion.
-
-        Includes base excluded fields plus log_id since it's specified
-        in the API endpoint path when inserting log events.
-        """
-        return super().excluded_fields_for_insert | {"log_id"}
 
     def get_resource_id(self, resource: ProjectLogsEvent) -> str:
         """Get the unique identifier for a log event.
@@ -94,26 +85,140 @@ class LogsMigrator(ResourceMigrator[ProjectLogsEvent]):
             self._logger.error("Failed to list source logs", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: ProjectLogsEvent) -> str | None:
-        """Check if a log event already exists in the destination.
+    async def migrate_batch(
+        self, resources: list[ProjectLogsEvent]
+    ) -> list[MigrationResult]:
+        """Migrate a batch of log events using bulk insert for better performance.
+
+        This overrides the base migrate_batch to take advantage of the Braintrust API's
+        ability to insert multiple log events in a single API call.
 
         Args:
-            resource: Source log event to check.
+            resources: List of log events to migrate.
 
         Returns:
-            Destination log event ID if it exists, None otherwise.
-
-        Note:
-            For logs, we typically don't check for existence since each log
-            event is unique and should be migrated. This method returns None
-            to ensure all logs are migrated.
+            List of migration results.
         """
-        # Log events are typically unique and should all be migrated
-        # We don't check for duplicates to avoid missing any log data
-        return None
+        if not resources:
+            return []
+
+        results = []
+        events_to_insert = []
+        resource_map = {}  # Maps array index to resource for result creation
+
+        for resource in resources:
+            source_id = self.get_resource_id(resource)
+
+            # Prepare for bulk insert
+            try:
+                insert_event = self.serialize_resource_for_insert(resource)
+                insert_index = len(events_to_insert)
+                events_to_insert.append(insert_event)
+                resource_map[insert_index] = resource
+            except Exception as e:
+                error_msg = f"Failed to serialize log event: {e}"
+                self.record_failure(source_id, error_msg)
+                results.append(
+                    MigrationResult(
+                        success=False,
+                        source_id=source_id,
+                        error=error_msg,
+                    )
+                )
+
+        # Perform bulk insert if we have events to insert
+        if events_to_insert:
+            try:
+                self._logger.info(
+                    f"Bulk inserting {len(events_to_insert)} log events",
+                    project_id=self.dest_project_id,
+                )
+
+                insert_response = await self.dest_client.with_retry(
+                    "bulk_insert_log_events",
+                    lambda: self.dest_client.client.projects.logs.insert(
+                        project_id=self.dest_project_id, events=events_to_insert
+                    ),
+                )
+
+                # Process the bulk insert response
+                if hasattr(insert_response, "row_ids") and insert_response.row_ids:
+                    row_ids = insert_response.row_ids
+
+                    # Ensure we have the same number of row_ids as events inserted
+                    if len(row_ids) != len(events_to_insert):
+                        self._logger.warning(
+                            f"Mismatch between inserted events ({len(events_to_insert)}) and returned row_ids ({len(row_ids)})"
+                        )
+
+                    # Create success results for each inserted event
+                    for i, row_id in enumerate(row_ids):
+                        if i in resource_map:
+                            resource = resource_map[i]
+                            source_id = self.get_resource_id(resource)
+
+                            self._logger.debug(
+                                "Created log event in destination",
+                                source_id=source_id,
+                                dest_id=row_id,
+                            )
+
+                            self.record_success(source_id, row_id, resource)
+                            results.append(
+                                MigrationResult(
+                                    success=True,
+                                    source_id=source_id,
+                                    dest_id=row_id,
+                                    metadata={},
+                                )
+                            )
+                        else:
+                            self._logger.warning(
+                                f"No resource mapping found for index {i}"
+                            )
+
+                else:
+                    # Fallback: create generic IDs if row_ids not available
+                    self._logger.warning(
+                        "No row_ids returned from bulk insert, using fallback IDs"
+                    )
+                    for i, resource in resource_map.items():
+                        source_id = self.get_resource_id(resource)
+                        dest_id = f"migrated_{source_id}"
+
+                        self.record_success(source_id, dest_id, resource)
+                        results.append(
+                            MigrationResult(
+                                success=True,
+                                source_id=source_id,
+                                dest_id=dest_id,
+                                metadata={},
+                            )
+                        )
+
+            except Exception as e:
+                error_msg = f"Bulk insert failed: {e}"
+                self._logger.error("Failed to bulk insert log events", error=str(e))
+
+                # Mark all events as failed
+                for resource in resource_map.values():
+                    source_id = self.get_resource_id(resource)
+                    self.record_failure(source_id, error_msg)
+                    results.append(
+                        MigrationResult(
+                            success=False,
+                            source_id=source_id,
+                            error=error_msg,
+                        )
+                    )
+
+        return results
 
     async def migrate_resource(self, resource: ProjectLogsEvent) -> str:
         """Migrate a single log event from source to destination.
+
+        Note: This method is kept for compatibility but migrate_batch should be used
+        for better performance when migrating multiple log events.
 
         Args:
             resource: Source log event to migrate.

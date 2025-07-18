@@ -1,12 +1,21 @@
 """Experiment migrator for Braintrust migration tool."""
 
+from typing import Any
+
 from braintrust_api.types import Experiment
 
-from braintrust_migrate.resources.base import ResourceMigrator
+from braintrust_migrate.resources.base import MigrationResult, ResourceMigrator
 
 
 class ExperimentMigrator(ResourceMigrator[Experiment]):
-    """Migrator for Braintrust experiments."""
+    """Migrator for Braintrust experiments.
+
+    Features:
+    - Migrates experiment metadata and settings
+    - Migrates all experiment events (evaluations) for each experiment
+    - Handles experiment dependencies (base_exp_id, dataset_id)
+    - Uses bulk operations for better performance
+    """
 
     @property
     def resource_name(self) -> str:
@@ -14,101 +23,65 @@ class ExperimentMigrator(ResourceMigrator[Experiment]):
         return "Experiments"
 
     @property
-    def excluded_fields_for_insert(self) -> set[str]:
-        """Fields to exclude when converting experiment events for API insertion.
+    def allowed_fields_for_event_insert(self) -> set[str] | None:
+        """Fields that are allowed when inserting experiment events.
 
-        Includes base excluded fields plus experiment_id since it's specified
-        in the API endpoint path when inserting experiment events.
+        Uses the InsertExperimentEvent schema from OpenAPI spec.
+
+        Returns:
+            Set of field names allowed for insertion, or None if schema not found.
         """
-        return super().excluded_fields_for_insert | {"experiment_id"}
+        from braintrust_migrate.openapi_utils import get_resource_create_fields
 
-    async def get_dependencies(self, resource: Experiment) -> list[str]:
-        """Get list of resource IDs that this experiment depends on.
+        return get_resource_create_fields("ExperimentEvent")
 
-        Experiments can depend on:
-        1. Other experiments via base_exp_id (baseline experiment for comparisons)
-        2. Datasets via dataset_id (linked dataset)
+    def _sort_experiments_by_dependencies(
+        self, experiments: list[Experiment]
+    ) -> list[Experiment]:
+        """Sort experiments using a simple two-pass approach.
+
+        Pass 1: Experiments without base_exp_id (no dependencies)
+        Pass 2: Experiments with base_exp_id (dependent experiments)
 
         Args:
-            resource: Experiment to get dependencies for.
+            experiments: List of experiments to sort
 
         Returns:
-            List of resource IDs this experiment depends on.
+            List of experiments sorted by dependency order
         """
-        dependencies = []
+        independent_experiments = []
+        dependent_experiments = []
 
-        # Include dataset dependencies
-        if hasattr(resource, "dataset_id") and resource.dataset_id:
-            dependencies.append(resource.dataset_id)
-            self._logger.debug(
-                "Found dataset dependency",
-                experiment_id=resource.id,
-                experiment_name=resource.name,
-                dataset_id=resource.dataset_id,
-            )
+        for exp in experiments:
+            if hasattr(exp, "base_exp_id") and exp.base_exp_id:
+                dependent_experiments.append(exp)
+            else:
+                independent_experiments.append(exp)
 
-        # Include base experiment dependencies
-        if hasattr(resource, "base_exp_id") and resource.base_exp_id:
-            dependencies.append(resource.base_exp_id)
-            self._logger.debug(
-                "Found base experiment dependency",
-                experiment_id=resource.id,
-                base_exp_id=resource.base_exp_id,
-            )
+        self._logger.info(
+            "Split experiments by dependencies",
+            independent=len(independent_experiments),
+            dependent=len(dependent_experiments),
+        )
 
-        return dependencies
-
-    async def get_dependency_types(self) -> list[str]:
-        """Get list of resource types that experiments might depend on.
-
-        Returns:
-            List of resource type names that experiments can depend on.
-        """
-        return ["datasets", "experiments"]
+        return independent_experiments + dependent_experiments
 
     async def list_source_resources(
         self, project_id: str | None = None
     ) -> list[Experiment]:
-        """List all experiments from the source organization.
-
-        Args:
-            project_id: Optional project ID to filter experiments.
-
-        Returns:
-            List of experiments from the source organization.
-        """
+        """List all experiments from the source organization, sorted by dependencies."""
         try:
-            # Use base class helper method
             experiments = await self._list_resources_with_client(
                 self.source_client, "experiments", project_id
             )
 
-            # Log experiment dependency structure for debugging
             if experiments:
-                experiment_deps = {}
-                base_experiment_refs = {}
-
-                for exp in experiments:
-                    exp_info = {
-                        "name": exp.name,
-                        "project_id": exp.project_id,
-                        "has_base_exp": hasattr(exp, "base_exp_id")
-                        and exp.base_exp_id is not None,
-                        "has_dataset": hasattr(exp, "dataset_id")
-                        and exp.dataset_id is not None,
-                    }
-
-                    if hasattr(exp, "base_exp_id") and exp.base_exp_id:
-                        exp_info["base_exp_id"] = exp.base_exp_id
-                        base_experiment_refs[exp.base_exp_id] = (
-                            base_experiment_refs.get(exp.base_exp_id, 0) + 1
-                        )
-
-                    experiment_deps[exp.id] = exp_info
+                # Sort experiments by dependencies for proper migration order
+                experiments = self._sort_experiments_by_dependencies(experiments)
 
                 self._logger.info(
                     "Found experiments for migration",
-                    total_experiments=len(experiments),
+                    total=len(experiments),
                     project_id=project_id,
                 )
 
@@ -118,154 +91,263 @@ class ExperimentMigrator(ResourceMigrator[Experiment]):
             self._logger.error("Failed to list source experiments", error=str(e))
             raise
 
-    async def resource_exists_in_dest(self, resource: Experiment) -> str | None:
-        """Check if an experiment already exists in the destination.
+    async def get_dependencies(self, resource: Experiment) -> list[str]:
+        """Get list of resource IDs that this experiment depends on."""
+        dependencies = []
+
+        if hasattr(resource, "dataset_id") and resource.dataset_id:
+            dependencies.append(resource.dataset_id)
+
+        if hasattr(resource, "base_exp_id") and resource.base_exp_id:
+            dependencies.append(resource.base_exp_id)
+
+        return dependencies
+
+    async def get_dependency_types(self) -> list[str]:
+        """Get list of resource types that experiments might depend on."""
+        return ["datasets", "experiments"]
+
+    async def migrate_batch(self, resources: list[Experiment]) -> list[MigrationResult]:
+        """Migrate a batch of experiments with dependency-aware ordering.
+
+        This handles base_exp_id dependencies by:
+        1. Creating experiments without base_exp_id first
+        2. Recording their new IDs
+        3. Creating experiments with base_exp_id using the new mappings
+        4. Migrating events for all experiments
 
         Args:
-            resource: Source experiment to check.
+            resources: List of experiments to migrate.
 
         Returns:
-            Destination experiment ID if it exists, None otherwise.
+            List of migration results.
         """
-        # Use base class helper method
-        additional_params = {"experiment_name": resource.name}
-        return await self._check_resource_exists_by_name(
-            resource, "experiments", additional_params=additional_params
+        if not resources:
+            return []
+
+        results = []
+        experiments_to_create = []
+
+        # Separate experiments by dependency (base_exp_id)
+        independent_experiments = []  # No base_exp_id
+        dependent_experiments = []  # Has base_exp_id
+
+        for i, experiment in enumerate(resources):
+            if hasattr(experiment, "base_exp_id") and experiment.base_exp_id:
+                dependent_experiments.append((i, experiment))
+            else:
+                independent_experiments.append((i, experiment))
+
+        self._logger.info(
+            "Batch experiment creation plan",
+            total=len(experiments_to_create),
+            independent=len(independent_experiments),
+            dependent=len(dependent_experiments),
+        )
+
+        # Phase 1: Create independent experiments (no base_exp_id)
+        if independent_experiments:
+            phase1_results = await self._create_experiments_batch(
+                independent_experiments, "independent"
+            )
+            results.extend(phase1_results)
+
+        # Phase 2: Create dependent experiments (with base_exp_id)
+        if dependent_experiments:
+            phase2_results = await self._create_experiments_batch(
+                dependent_experiments, "dependent"
+            )
+            results.extend(phase2_results)
+
+        # Phase 3: Migrate events for all successfully created experiments
+        successful_migrations = [r for r in results if r.success and not r.skipped]
+        if successful_migrations:
+            await self._migrate_events_for_experiments(successful_migrations)
+
+        return results
+
+    async def _create_experiments_batch(
+        self, indexed_experiments: list[tuple[int, Experiment]], phase_name: str
+    ) -> list[MigrationResult]:
+        """Create a batch of experiments of the same dependency type.
+
+        Args:
+            indexed_experiments: List of (index, experiment) tuples
+            phase_name: Name for logging (independent/dependent)
+
+        Returns:
+            List of migration results for this batch
+        """
+        if not indexed_experiments:
+            return []
+
+        results = []
+
+        self._logger.info(
+            f"Creating {phase_name} experiments",
+            count=len(indexed_experiments),
+        )
+
+        # Create experiments one by one but track results for bulk event migration
+        for index, experiment in indexed_experiments:
+            source_id = self.get_resource_id(experiment)
+
+            try:
+                # Prepare experiment for creation
+                create_params = self.serialize_resource_for_insert(experiment)
+                create_params["project_id"] = self.dest_project_id
+
+                # Handle dependencies with ID mapping
+                if hasattr(experiment, "base_exp_id") and experiment.base_exp_id:
+                    dest_base_exp_id = self.state.id_mapping.get(experiment.base_exp_id)
+                    if dest_base_exp_id:
+                        create_params["base_exp_id"] = dest_base_exp_id
+                    else:
+                        self._logger.warning(
+                            "Could not resolve base experiment dependency",
+                            source_base_exp_id=experiment.base_exp_id,
+                        )
+                        create_params.pop("base_exp_id", None)
+
+                if hasattr(experiment, "dataset_id") and experiment.dataset_id:
+                    dest_dataset_id = self.state.id_mapping.get(experiment.dataset_id)
+                    if dest_dataset_id:
+                        create_params["dataset_id"] = dest_dataset_id
+                    else:
+                        self._logger.warning(
+                            "Could not resolve dataset dependency",
+                            source_dataset_id=experiment.dataset_id,
+                        )
+                        create_params.pop("dataset_id", None)
+
+                # Create experiment
+                dest_experiment = await self.dest_client.with_retry(
+                    "create_experiment",
+                    lambda: self.dest_client.client.experiments.create(**create_params),
+                )
+
+                self._logger.info(
+                    f"✅ Created {phase_name} experiment",
+                    source_id=source_id,
+                    dest_id=dest_experiment.id,
+                    name=experiment.name,
+                )
+
+                # Record success immediately for dependency resolution
+                self.record_success(source_id, dest_experiment.id, experiment)
+
+                results.append(
+                    MigrationResult(
+                        success=True,
+                        source_id=source_id,
+                        dest_id=dest_experiment.id,
+                        metadata={"name": experiment.name, "events_pending": True},
+                    )
+                )
+
+            except Exception as e:
+                error_msg = f"Failed to create {phase_name} experiment: {e}"
+                self._logger.error(
+                    error_msg,
+                    source_id=source_id,
+                    name=experiment.name,
+                )
+
+                self.record_failure(source_id, error_msg)
+                results.append(
+                    MigrationResult(
+                        success=False,
+                        source_id=source_id,
+                        error=error_msg,
+                    )
+                )
+
+        return results
+
+    async def _migrate_events_for_experiments(
+        self, successful_migrations: list[MigrationResult]
+    ) -> None:
+        """Migrate events for all successfully created experiments.
+
+        Args:
+            successful_migrations: List of successful migration results
+        """
+        self._logger.info(
+            "Starting bulk event migration",
+            experiment_count=len(successful_migrations),
+        )
+
+        for result in successful_migrations:
+            try:
+                await self._migrate_experiment_events(result.source_id, result.dest_id)
+
+                # Update metadata to indicate events are migrated
+                if result.metadata:
+                    result.metadata["events_pending"] = False
+                    result.metadata["events_migrated"] = True
+
+            except Exception as e:
+                self._logger.error(
+                    "Failed to migrate events for experiment",
+                    source_id=result.source_id,
+                    dest_id=result.dest_id,
+                    error=str(e),
+                )
+                # Update metadata to indicate event migration failed
+                if result.metadata:
+                    result.metadata["events_pending"] = False
+                    result.metadata["events_failed"] = True
+
+        self._logger.info(
+            "Completed bulk event migration",
+            experiment_count=len(successful_migrations),
         )
 
     async def migrate_resource(self, resource: Experiment) -> str:
         """Migrate a single experiment from source to destination.
 
-        Args:
-            resource: Source experiment to migrate.
-
-        Returns:
-            ID of the created experiment in destination.
-
-        Raises:
-            Exception: If migration fails.
+        Note: This method is kept for compatibility but migrate_batch should be used
+        for better performance when migrating multiple experiments.
         """
-        # Get dependencies first to log them
-        dependencies = await self.get_dependencies(resource)
-
         self._logger.info(
-            "Starting experiment migration with dependency analysis",
+            "Migrating experiment",
             source_id=resource.id,
             name=resource.name,
-            project_id=resource.project_id,
-            dependencies=dependencies,
-            has_base_exp=hasattr(resource, "base_exp_id")
-            and resource.base_exp_id is not None,
-            has_dataset=hasattr(resource, "dataset_id")
-            and resource.dataset_id is not None,
-            base_exp_id=getattr(resource, "base_exp_id", None),
-            dataset_id=getattr(resource, "dataset_id", None),
         )
 
-        # Create experiment in destination
-        create_params = {
-            "project_id": self.dest_project_id,  # Use destination project ID
-        }
-
-        # Copy optional fields if they exist
-        if hasattr(resource, "name") and resource.name:
-            create_params["name"] = resource.name
-
-        if hasattr(resource, "description") and resource.description:
-            create_params["description"] = resource.description
-
-        if hasattr(resource, "repo_info") and resource.repo_info:
-            create_params["repo_info"] = resource.repo_info
-
-        if hasattr(resource, "public") and resource.public is not None:
-            create_params["public"] = resource.public
-
-        if hasattr(resource, "metadata") and resource.metadata:
-            create_params["metadata"] = resource.metadata
+        # Create experiment in destination using base class serialization
+        create_params = self.serialize_resource_for_insert(resource)
+        create_params["project_id"] = self.dest_project_id
 
         # Handle dependencies with ID mapping
         if hasattr(resource, "base_exp_id") and resource.base_exp_id:
             dest_base_exp_id = self.state.id_mapping.get(resource.base_exp_id)
             if dest_base_exp_id:
                 create_params["base_exp_id"] = dest_base_exp_id
-                self._logger.debug(
-                    "Resolved base experiment dependency",
-                    experiment_name=resource.name,
-                    dest_base_exp_id=dest_base_exp_id,
-                )
             else:
-                # Get some context about what mappings we DO have
-                experiment_mappings = {
-                    src_id: dst_id
-                    for src_id, dst_id in self.state.id_mapping.items()
-                    if src_id
-                    != resource.base_exp_id  # Don't include the one we're looking for
-                }
-
-                # Find experiments in our current project
-                project_experiment_mappings = {}
-                dataset_mappings = {}
-                other_mappings = {}
-
-                for src_id, dst_id in self.state.id_mapping.items():
-                    # Try to categorize mappings to understand what we have
-                    if (
-                        "experiment" in str(src_id).lower()
-                        or len(
-                            [
-                                k
-                                for k in self.state.id_mapping.keys()
-                                if k.startswith(src_id[:8])
-                            ]
-                        )
-                        > 1
-                    ):
-                        project_experiment_mappings[src_id] = dst_id
-                    elif "dataset" in str(src_id).lower():
-                        dataset_mappings[src_id] = dst_id
-                    else:
-                        other_mappings[src_id] = dst_id
-
                 self._logger.warning(
                     "Could not resolve base experiment dependency",
-                    experiment_name=resource.name,
                     source_base_exp_id=resource.base_exp_id,
                 )
-                # Continue without base_exp_id rather than fail
+                create_params.pop("base_exp_id", None)
 
         if hasattr(resource, "dataset_id") and resource.dataset_id:
             dest_dataset_id = self.state.id_mapping.get(resource.dataset_id)
             if dest_dataset_id:
                 create_params["dataset_id"] = dest_dataset_id
-                # Also copy dataset_version if present
-                if hasattr(resource, "dataset_version") and resource.dataset_version:
-                    create_params["dataset_version"] = resource.dataset_version
-                self._logger.debug(
-                    "Resolved dataset dependency",
-                    source_dataset_id=resource.dataset_id,
-                    dest_dataset_id=dest_dataset_id,
-                    dataset_version=getattr(resource, "dataset_version", None),
-                )
             else:
                 self._logger.warning(
                     "Could not resolve dataset dependency",
                     source_dataset_id=resource.dataset_id,
                 )
-                # Continue without dataset_id rather than fail
+                create_params.pop("dataset_id", None)
 
         dest_experiment = await self.dest_client.with_retry(
             "create_experiment",
             lambda: self.dest_client.client.experiments.create(**create_params),
         )
 
-        self._logger.info(
-            "Created experiment in destination",
-            source_id=resource.id,
-            dest_id=dest_experiment.id,
-            name=resource.name,
-        )
-
-        # Migrate experiment events/logs
+        # Migrate experiment events
         await self._migrate_experiment_events(resource.id, dest_experiment.id)
 
         return dest_experiment.id
@@ -273,18 +355,7 @@ class ExperimentMigrator(ResourceMigrator[Experiment]):
     async def _migrate_experiment_events(
         self, source_experiment_id: str, dest_experiment_id: str
     ) -> None:
-        """Migrate events from source experiment to destination experiment.
-
-        Args:
-            source_experiment_id: Source experiment ID.
-            dest_experiment_id: Destination experiment ID.
-        """
-        self._logger.info(
-            "Migrating experiment events",
-            source_experiment_id=source_experiment_id,
-            dest_experiment_id=dest_experiment_id,
-        )
-
+        """Migrate events from source experiment to destination experiment."""
         try:
             # Get events from source experiment
             source_events = await self.source_client.with_retry(
@@ -304,23 +375,13 @@ class ExperimentMigrator(ResourceMigrator[Experiment]):
 
             events_to_insert = []
             for event in source_events.events:
-                # Convert event to insert format using base class method
-                try:
-                    insert_event = self.serialize_resource_for_insert(event)
-                except Exception as e:
-                    self._logger.error(
-                        "Failed to serialize event - this indicates a bug in serialize_resource_for_insert",
-                        error=str(e),
-                        event_type=type(event).__name__,
-                        source_experiment_id=source_experiment_id,
-                    )
-                    raise
-
-                events_to_insert.append(insert_event)
+                prepared_event = self._prepare_event_for_insertion(event)
+                if prepared_event:
+                    events_to_insert.append(prepared_event)
 
             if events_to_insert:
                 # Insert events in batches
-                batch_size = min(self.batch_size, 100)  # Limit batch size for events
+                batch_size = min(self.batch_size, 100)
                 for i in range(0, len(events_to_insert), batch_size):
                     batch = events_to_insert[i : i + batch_size]
 
@@ -341,10 +402,69 @@ class ExperimentMigrator(ResourceMigrator[Experiment]):
                 self._logger.info("No valid events to migrate")
 
         except Exception as e:
-            self._logger.error(
-                "Failed to migrate experiment events",
-                source_experiment_id=source_experiment_id,
-                dest_experiment_id=dest_experiment_id,
-                error=str(e),
+            # Handle specific error cases gracefully
+            error_str = str(e)
+            if "Error code: 303" in error_str:
+                self._logger.warning(
+                    "Experiment events fetch returned HTTP 303 - skipping events migration",
+                    source_experiment_id=source_experiment_id,
+                )
+                return
+            elif "Error code: 404" in error_str:
+                self._logger.info(
+                    "No events found in source experiment (404)",
+                    source_experiment_id=source_experiment_id,
+                )
+                return
+            else:
+                self._logger.error(
+                    "Failed to migrate experiment events",
+                    source_experiment_id=source_experiment_id,
+                    error=str(e),
+                )
+
+    def _prepare_event_for_insertion(self, event) -> dict[str, Any] | None:
+        """Prepare an experiment event for insertion into the destination.
+
+        Uses the same serialization pattern as the base class but simplified for events.
+
+        Args:
+            event: Source experiment event to prepare.
+
+        Returns:
+            Dictionary ready for insertion, or None if preparation failed.
+        """
+        try:
+            # Serialize using to_dict (all Braintrust API objects have this method)
+            event_dict = event.to_dict(
+                mode="json",
+                exclude_unset=True,
+                exclude_none=True,
             )
-            raise
+
+            if not event_dict:
+                return None
+
+            # Apply OpenAPI-based field filtering for InsertExperimentEvent schema
+            allowed_fields = self.allowed_fields_for_event_insert
+            if allowed_fields is None:
+                self._logger.error(
+                    "No InsertExperimentEvent schema found in OpenAPI spec"
+                )
+                return None
+
+            filtered_event = {
+                field: event_dict[field]
+                for field in allowed_fields
+                if field in event_dict
+            }
+
+            return filtered_event if filtered_event else None
+
+        except Exception as e:
+            self._logger.warning(
+                "Failed to prepare event for insertion",
+                error=str(e),
+                event_type=type(event).__name__,
+            )
+            return None

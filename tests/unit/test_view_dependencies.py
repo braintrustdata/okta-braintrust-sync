@@ -45,6 +45,19 @@ def project_view():
     view.view_data = {"filters": []}
     view.options = {"columnVisibility": {}}
     view.user_id = "user-789"
+
+    # Mock the to_dict method
+    view.to_dict.return_value = {
+        "id": "view-123",
+        "name": "Project Overview",
+        "object_type": "project",
+        "object_id": "project-456",
+        "view_type": "experiments",
+        "view_data": {"filters": []},
+        "options": {"columnVisibility": {}},
+        "user_id": "user-789",
+    }
+
     return view
 
 
@@ -60,6 +73,19 @@ def experiment_view():
     view.view_data = {"sort": [{"field": "timestamp", "order": "desc"}]}
     view.options = {"pageSize": 50}
     view.user_id = "user-789"
+
+    # Mock the to_dict method
+    view.to_dict.return_value = {
+        "id": "view-456",
+        "name": "Experiment Details",
+        "object_type": "experiment",
+        "object_id": "experiment-123",
+        "view_type": "logs",
+        "view_data": {"sort": [{"field": "timestamp", "order": "desc"}]},
+        "options": {"pageSize": 50},
+        "user_id": "user-789",
+    }
+
     return view
 
 
@@ -75,6 +101,19 @@ def dataset_view():
     view.view_data = {"filters": [{"field": "score", "op": ">", "value": 0.8}]}
     view.options = {"groupBy": ["category"]}
     view.user_id = "user-789"
+
+    # Mock the to_dict method
+    view.to_dict.return_value = {
+        "id": "view-789",
+        "name": "Dataset Analysis",
+        "object_type": "dataset",
+        "object_id": "dataset-456",
+        "view_type": "dataset",
+        "view_data": {"filters": [{"field": "score", "op": ">", "value": 0.8}]},
+        "options": {"groupBy": ["category"]},
+        "user_id": "user-789",
+    }
+
     return view
 
 
@@ -90,6 +129,19 @@ def unknown_object_view():
     view.view_data = {}
     view.options = {}
     view.user_id = "user-789"
+
+    # Mock the to_dict method
+    view.to_dict.return_value = {
+        "id": "view-999",
+        "name": "Unknown Object View",
+        "object_type": "unknown_type",
+        "object_id": "unknown-123",
+        "view_type": "custom",
+        "view_data": {},
+        "options": {},
+        "user_id": "user-789",
+    }
+
     return view
 
 
@@ -317,47 +369,3 @@ class TestViewDependencies:
 
         assert result == "new-view-789"
         mock_dest_client.with_retry.assert_called_once()
-
-    async def test_resource_exists_in_dest_with_resolved_object_id(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        experiment_view,
-    ):
-        """Test checking if view exists with resolved object_id."""
-        # Mock existing view in destination
-        existing_view = Mock(spec=View)
-        existing_view.id = "existing-view-456"
-        existing_view.name = "Experiment Details"
-        existing_view.object_id = "dest-experiment-123"
-        mock_dest_client.with_retry.return_value = [existing_view]
-
-        migrator = ViewMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-        migrator.dest_project_id = "dest-project-456"
-        migrator.state.id_mapping["experiment-123"] = "dest-experiment-123"
-
-        result = await migrator.resource_exists_in_dest(experiment_view)
-
-        assert result == "existing-view-456"
-
-    async def test_resource_exists_in_dest_not_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        project_view,
-    ):
-        """Test checking if view exists when not found."""
-        mock_dest_client.with_retry.return_value = []
-
-        migrator = ViewMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-        migrator.dest_project_id = "dest-project-456"
-
-        result = await migrator.resource_exists_in_dest(project_view)
-
-        assert result is None

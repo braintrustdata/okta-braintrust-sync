@@ -239,6 +239,18 @@ def sample_project_tag():
     project_tag.created = "2024-01-01T00:00:00Z"
     project_tag.description = "A test project tag"
     project_tag.color = "#FF0000"
+
+    # Mock the to_dict method to return a proper dictionary
+    project_tag.to_dict.return_value = {
+        "id": "tag-123",
+        "name": "Test Tag",
+        "project_id": "project-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A test project tag",
+        "color": "#FF0000",
+    }
+
     return project_tag
 
 
@@ -258,6 +270,23 @@ def sample_role():
         {"permission": "create", "restrict_object_type": "project"},
     ]
     role.member_roles = None
+
+    # Mock the to_dict method to return a proper dictionary
+    role.to_dict.return_value = {
+        "id": "role-123",
+        "name": "Test Role",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A test role",
+        "deleted_at": None,
+        "member_permissions": [
+            {"permission": "read", "restrict_object_type": None},
+            {"permission": "create", "restrict_object_type": "project"},
+        ],
+        "member_roles": None,
+    }
+
     return role
 
 
@@ -274,6 +303,19 @@ def sample_group():
     group.deleted_at = None
     group.member_groups = None
     group.member_users = ["user-123", "user-456"]
+
+    # Mock the to_dict method to return a proper dictionary
+    group.to_dict.return_value = {
+        "id": "group-123",
+        "name": "Test Group",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A test group",
+        "deleted_at": None,
+        "member_groups": None,
+        "member_users": ["user-123", "user-456"],
+    }
     return group
 
 
@@ -291,6 +333,21 @@ def sample_acl():
     acl.restrict_object_type = None
     acl.object_org_id = "org-456"
     acl.created = "2024-01-01T00:00:00Z"
+
+    # Mock the to_dict method to return a proper dictionary
+    acl.to_dict.return_value = {
+        "id": "acl-123",
+        "object_type": "project",
+        "object_id": "project-456",
+        "group_id": "group-789",
+        "user_id": None,
+        "permission": "read",
+        "role_id": None,
+        "restrict_object_type": None,
+        "object_org_id": "org-456",
+        "created": "2024-01-01T00:00:00Z",
+    }
+
     return acl
 
 
@@ -308,6 +365,21 @@ def sample_project_score():
     project_score.categories = None
     project_score.config = None
     project_score.position = None
+
+    # Mock the to_dict method to return a proper dictionary
+    project_score.to_dict.return_value = {
+        "id": "score-123",
+        "name": "Test Score",
+        "project_id": "project-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A test project score",
+        "score_type": "slider",
+        "categories": None,
+        "config": None,
+        "position": None,
+    }
+
     return project_score
 
 

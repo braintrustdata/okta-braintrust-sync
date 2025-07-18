@@ -21,6 +21,19 @@ def group_with_inheritance():
     group.deleted_at = None
     group.member_groups = ["group-parent-1", "group-parent-2"]
     group.member_users = ["user-123", "user-456"]
+
+    # Mock the to_dict method to return a proper dictionary
+    group.to_dict.return_value = {
+        "id": "group-child-123",
+        "name": "Child Group",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A group that inherits from parent groups",
+        "deleted_at": None,
+        "member_groups": ["group-parent-1", "group-parent-2"],
+        "member_users": ["user-123", "user-456"],
+    }
     return group
 
 
@@ -37,6 +50,19 @@ def group_without_inheritance():
     group.deleted_at = None
     group.member_groups = None
     group.member_users = ["user-123"]
+
+    # Mock the to_dict method to return a proper dictionary
+    group.to_dict.return_value = {
+        "id": "group-independent-456",
+        "name": "Independent Group",
+        "org_id": "org-456",
+        "user_id": "user-789",
+        "created": "2024-01-01T00:00:00Z",
+        "description": "A group without inheritance",
+        "deleted_at": None,
+        "member_groups": None,
+        "member_users": ["user-123"],
+    }
     return group
 
 
@@ -188,95 +214,6 @@ class TestGroupMigrator:
         with pytest.raises(Exception, match="API Error"):
             await migrator.list_source_resources()
 
-    async def test_resource_exists_in_dest_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_group,
-    ):
-        """Test finding existing group in destination."""
-        # Mock existing group in destination
-        dest_group = Mock(spec=Group)
-        dest_group.id = "dest-group-123"
-        dest_group.name = "Test Group"
-
-        mock_response = Mock()
-        mock_response.objects = [dest_group]
-        mock_dest_client.with_retry.return_value = mock_response
-
-        migrator = GroupMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_group)
-
-        assert result == "dest-group-123"
-
-    async def test_resource_exists_in_dest_not_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_group,
-    ):
-        """Test group not found in destination."""
-        mock_response = Mock()
-        mock_response.objects = []
-        mock_dest_client.with_retry.return_value = mock_response
-
-        migrator = GroupMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_group)
-
-        assert result is None
-
-    async def test_resource_exists_in_dest_async_iterator(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_group,
-    ):
-        """Test finding existing group with async iterator response."""
-        # Mock existing group in destination
-        dest_group = Mock(spec=Group)
-        dest_group.id = "dest-group-123"
-        dest_group.name = "Test Group"
-
-        async def async_iter():
-            yield dest_group
-
-        mock_dest_client.with_retry.return_value = async_iter()
-
-        migrator = GroupMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_group)
-
-        assert result == "dest-group-123"
-
-    async def test_resource_exists_in_dest_error(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_group,
-    ):
-        """Test error handling in resource_exists_in_dest."""
-        mock_dest_client.with_retry.side_effect = Exception("API Error")
-
-        migrator = GroupMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_group)
-
-        assert result is None
-
     async def test_migrate_resource_success_full_fields(
         self,
         mock_source_client,
@@ -314,6 +251,15 @@ class TestGroupMigrator:
         minimal_group.description = None
         minimal_group.member_groups = None
         minimal_group.member_users = None
+
+        # Mock the to_dict method to return a proper dictionary
+        minimal_group.to_dict.return_value = {
+            "id": "group-minimal-123",
+            "name": "Minimal Group",
+            "description": None,
+            "member_groups": None,
+            "member_users": None,
+        }
 
         # Mock successful group creation
         created_group = Mock(spec=Group)

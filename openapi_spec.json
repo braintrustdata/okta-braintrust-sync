@@ -285,9 +285,10 @@
           "scorers",
           "logs",
           "agents",
+          "monitor",
           null
         ],
-        "description": "Type of table that the view corresponds to."
+        "description": "Type of object that the view corresponds to."
       },
       "UserGivenName": {
         "anyOf": [
@@ -1401,6 +1402,14 @@
               "nullable": true
             },
             "description": "User-controlled metadata about the experiment"
+          },
+          "tags": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "A list of tags for the experiment"
           }
         },
         "required": [
@@ -1462,6 +1471,14 @@
             },
             "description": "User-controlled metadata about the experiment"
           },
+          "tags": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "A list of tags for the experiment"
+          },
           "ensure_new": {
             "type": "boolean",
             "nullable": true,
@@ -1517,6 +1534,14 @@
               "nullable": true
             },
             "description": "User-controlled metadata about the experiment"
+          },
+          "tags": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "A list of tags for the experiment"
           }
         }
       },
@@ -2923,6 +2948,40 @@
           {
             "type": "object",
             "properties": {
+              "content": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "default": "",
+                    "title": "text"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ChatCompletionContentPartText"
+                    },
+                    "title": "array"
+                  }
+                ]
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "developer"
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "role"
+            ],
+            "title": "developer"
+          },
+          {
+            "type": "object",
+            "properties": {
               "role": {
                 "type": "string",
                 "enum": [
@@ -4074,15 +4133,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Acl"
-            },
-            "description": "An ACL grants a certain permission or role to a certain user or group on an object.\n\nACLs are inherited across the object hierarchy. So for example, if a user has read permissions on a project, they will also have read permissions on any experiment, dataset, etc. created within that project.\n\nTo restrict a grant to a particular sub-object, you may specify `restrict_object_type` in the ACL, as part of a direct permission grant or as part of a role."
+            }
           },
           "removed_acls": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Acl"
-            },
-            "description": "An ACL grants a certain permission or role to a certain user or group on an object.\n\nACLs are inherited across the object hierarchy. So for example, if a user has read permissions on a project, they will also have read permissions on any experiment, dataset, etc. created within that project.\n\nTo restrict a grant to a particular sub-object, you may specify `restrict_object_type` in the ACL, as part of a direct permission grant or as part of a role."
+            }
           }
         },
         "required": [
@@ -4098,16 +4155,14 @@
             "nullable": true,
             "items": {
               "$ref": "#/components/schemas/AclItem"
-            },
-            "description": "An ACL grants a certain permission or role to a certain user or group on an object.\n\nACLs are inherited across the object hierarchy. So for example, if a user has read permissions on a project, they will also have read permissions on any experiment, dataset, etc. created within that project.\n\nTo restrict a grant to a particular sub-object, you may specify `restrict_object_type` in the ACL, as part of a direct permission grant or as part of a role."
+            }
           },
           "remove_acls": {
             "type": "array",
             "nullable": true,
             "items": {
               "$ref": "#/components/schemas/AclItem"
-            },
-            "description": "An ACL grants a certain permission or role to a certain user or group on an object.\n\nACLs are inherited across the object hierarchy. So for example, if a user has read permissions on a project, they will also have read permissions on any experiment, dataset, etc. created within that project.\n\nTo restrict a grant to a particular sub-object, you may specify `restrict_object_type` in the ACL, as part of a direct permission grant or as part of a role."
+            }
           }
         }
       },
@@ -4185,52 +4240,183 @@
             "description": "Textual description of the project automation"
           },
           "config": {
-            "type": "object",
-            "properties": {
-              "event_type": {
-                "type": "string",
-                "enum": [
-                  "logs"
-                ],
-                "description": "The event which starts the automation execution"
-              },
-              "btql_filter": {
-                "type": "string",
-                "description": "BTQL filter to identify rows for the automation rule"
-              },
-              "interval_seconds": {
-                "type": "number",
-                "minimum": 1,
-                "maximum": 2592000,
-                "description": "Perform the triggered action at most once in this interval of seconds"
-              },
-              "action": {
+            "anyOf": [
+              {
                 "type": "object",
                 "properties": {
-                  "type": {
+                  "event_type": {
                     "type": "string",
                     "enum": [
-                      "webhook"
+                      "logs"
                     ],
-                    "description": "The type of action to take when the automation rule is triggered"
+                    "description": "The type of automation."
                   },
-                  "url": {
+                  "btql_filter": {
                     "type": "string",
-                    "description": "The webhook URL to send the request to"
+                    "description": "BTQL filter to identify rows for the automation rule"
+                  },
+                  "interval_seconds": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 2592000,
+                    "description": "Perform the triggered action at most once in this interval of seconds"
+                  },
+                  "action": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "webhook"
+                            ],
+                            "description": "The type of action to take"
+                          },
+                          "url": {
+                            "type": "string",
+                            "description": "The webhook URL to send the request to"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "url"
+                        ]
+                      }
+                    ],
+                    "description": "The action to take when the automation rule is triggered"
                   }
                 },
                 "required": [
-                  "type",
-                  "url"
-                ],
-                "description": "The action to take when the automation rule is triggered"
+                  "event_type",
+                  "btql_filter",
+                  "interval_seconds",
+                  "action"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "event_type": {
+                    "type": "string",
+                    "enum": [
+                      "btql_export"
+                    ],
+                    "description": "The type of automation."
+                  },
+                  "export_definition": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "log_traces"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "log_spans"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "btql_query"
+                            ]
+                          },
+                          "btql_query": {
+                            "type": "string",
+                            "description": "The BTQL query to export"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "btql_query"
+                        ]
+                      }
+                    ],
+                    "description": "The definition of what to export"
+                  },
+                  "export_path": {
+                    "type": "string",
+                    "description": "The path to export the results to. It should include the storage protocol and prefix, e.g. s3://bucket-name/path/to/export"
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "jsonl",
+                      "parquet"
+                    ],
+                    "description": "The format to export the results in"
+                  },
+                  "interval_seconds": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 2592000,
+                    "description": "Perform the triggered action at most once in this interval of seconds"
+                  },
+                  "credentials": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "aws_iam"
+                            ]
+                          },
+                          "role_arn": {
+                            "type": "string",
+                            "description": "The ARN of the IAM role to use"
+                          },
+                          "external_id": {
+                            "type": "string",
+                            "description": "The automation-specific external id component (auto-generated by default)"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "role_arn",
+                          "external_id"
+                        ]
+                      }
+                    ]
+                  },
+                  "batch_size": {
+                    "type": "number",
+                    "nullable": true,
+                    "description": "The number of rows to export in each batch"
+                  }
+                },
+                "required": [
+                  "event_type",
+                  "export_definition",
+                  "export_path",
+                  "format",
+                  "interval_seconds",
+                  "credentials"
+                ]
               }
-            },
-            "required": [
-              "event_type",
-              "btql_filter",
-              "interval_seconds",
-              "action"
             ],
             "description": "The configuration for the automation rule"
           }
@@ -4260,52 +4446,183 @@
             "description": "Textual description of the project automation"
           },
           "config": {
-            "type": "object",
-            "properties": {
-              "event_type": {
-                "type": "string",
-                "enum": [
-                  "logs"
-                ],
-                "description": "The event which starts the automation execution"
-              },
-              "btql_filter": {
-                "type": "string",
-                "description": "BTQL filter to identify rows for the automation rule"
-              },
-              "interval_seconds": {
-                "type": "number",
-                "minimum": 1,
-                "maximum": 2592000,
-                "description": "Perform the triggered action at most once in this interval of seconds"
-              },
-              "action": {
+            "anyOf": [
+              {
                 "type": "object",
                 "properties": {
-                  "type": {
+                  "event_type": {
                     "type": "string",
                     "enum": [
-                      "webhook"
+                      "logs"
                     ],
-                    "description": "The type of action to take when the automation rule is triggered"
+                    "description": "The type of automation."
                   },
-                  "url": {
+                  "btql_filter": {
                     "type": "string",
-                    "description": "The webhook URL to send the request to"
+                    "description": "BTQL filter to identify rows for the automation rule"
+                  },
+                  "interval_seconds": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 2592000,
+                    "description": "Perform the triggered action at most once in this interval of seconds"
+                  },
+                  "action": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "webhook"
+                            ],
+                            "description": "The type of action to take"
+                          },
+                          "url": {
+                            "type": "string",
+                            "description": "The webhook URL to send the request to"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "url"
+                        ]
+                      }
+                    ],
+                    "description": "The action to take when the automation rule is triggered"
                   }
                 },
                 "required": [
-                  "type",
-                  "url"
-                ],
-                "description": "The action to take when the automation rule is triggered"
+                  "event_type",
+                  "btql_filter",
+                  "interval_seconds",
+                  "action"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "event_type": {
+                    "type": "string",
+                    "enum": [
+                      "btql_export"
+                    ],
+                    "description": "The type of automation."
+                  },
+                  "export_definition": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "log_traces"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "log_spans"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "btql_query"
+                            ]
+                          },
+                          "btql_query": {
+                            "type": "string",
+                            "description": "The BTQL query to export"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "btql_query"
+                        ]
+                      }
+                    ],
+                    "description": "The definition of what to export"
+                  },
+                  "export_path": {
+                    "type": "string",
+                    "description": "The path to export the results to. It should include the storage protocol and prefix, e.g. s3://bucket-name/path/to/export"
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "jsonl",
+                      "parquet"
+                    ],
+                    "description": "The format to export the results in"
+                  },
+                  "interval_seconds": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 2592000,
+                    "description": "Perform the triggered action at most once in this interval of seconds"
+                  },
+                  "credentials": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "aws_iam"
+                            ]
+                          },
+                          "role_arn": {
+                            "type": "string",
+                            "description": "The ARN of the IAM role to use"
+                          },
+                          "external_id": {
+                            "type": "string",
+                            "description": "The automation-specific external id component (auto-generated by default)"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "role_arn",
+                          "external_id"
+                        ]
+                      }
+                    ]
+                  },
+                  "batch_size": {
+                    "type": "number",
+                    "nullable": true,
+                    "description": "The number of rows to export in each batch"
+                  }
+                },
+                "required": [
+                  "event_type",
+                  "export_definition",
+                  "export_path",
+                  "format",
+                  "interval_seconds",
+                  "credentials"
+                ]
               }
-            },
-            "required": [
-              "event_type",
-              "btql_filter",
-              "interval_seconds",
-              "action"
             ],
             "description": "The configuration for the automation rule"
           }
@@ -4330,53 +4647,186 @@
             "description": "Textual description of the project automation"
           },
           "config": {
-            "type": "object",
-            "nullable": true,
-            "properties": {
-              "event_type": {
-                "type": "string",
-                "enum": [
-                  "logs"
-                ],
-                "description": "The event which starts the automation execution"
-              },
-              "btql_filter": {
-                "type": "string",
-                "description": "BTQL filter to identify rows for the automation rule"
-              },
-              "interval_seconds": {
-                "type": "number",
-                "minimum": 1,
-                "maximum": 2592000,
-                "description": "Perform the triggered action at most once in this interval of seconds"
-              },
-              "action": {
+            "anyOf": [
+              {
                 "type": "object",
                 "properties": {
-                  "type": {
+                  "event_type": {
                     "type": "string",
                     "enum": [
-                      "webhook"
+                      "logs"
                     ],
-                    "description": "The type of action to take when the automation rule is triggered"
+                    "description": "The type of automation."
                   },
-                  "url": {
+                  "btql_filter": {
                     "type": "string",
-                    "description": "The webhook URL to send the request to"
+                    "description": "BTQL filter to identify rows for the automation rule"
+                  },
+                  "interval_seconds": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 2592000,
+                    "description": "Perform the triggered action at most once in this interval of seconds"
+                  },
+                  "action": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "webhook"
+                            ],
+                            "description": "The type of action to take"
+                          },
+                          "url": {
+                            "type": "string",
+                            "description": "The webhook URL to send the request to"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "url"
+                        ]
+                      }
+                    ],
+                    "description": "The action to take when the automation rule is triggered"
                   }
                 },
                 "required": [
-                  "type",
-                  "url"
-                ],
-                "description": "The action to take when the automation rule is triggered"
+                  "event_type",
+                  "btql_filter",
+                  "interval_seconds",
+                  "action"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "event_type": {
+                    "type": "string",
+                    "enum": [
+                      "btql_export"
+                    ],
+                    "description": "The type of automation."
+                  },
+                  "export_definition": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "log_traces"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "log_spans"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "btql_query"
+                            ]
+                          },
+                          "btql_query": {
+                            "type": "string",
+                            "description": "The BTQL query to export"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "btql_query"
+                        ]
+                      }
+                    ],
+                    "description": "The definition of what to export"
+                  },
+                  "export_path": {
+                    "type": "string",
+                    "description": "The path to export the results to. It should include the storage protocol and prefix, e.g. s3://bucket-name/path/to/export"
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "jsonl",
+                      "parquet"
+                    ],
+                    "description": "The format to export the results in"
+                  },
+                  "interval_seconds": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 2592000,
+                    "description": "Perform the triggered action at most once in this interval of seconds"
+                  },
+                  "credentials": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "aws_iam"
+                            ]
+                          },
+                          "role_arn": {
+                            "type": "string",
+                            "description": "The ARN of the IAM role to use"
+                          },
+                          "external_id": {
+                            "type": "string",
+                            "description": "The automation-specific external id component (auto-generated by default)"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "role_arn",
+                          "external_id"
+                        ]
+                      }
+                    ]
+                  },
+                  "batch_size": {
+                    "type": "number",
+                    "nullable": true,
+                    "description": "The number of rows to export in each batch"
+                  }
+                },
+                "required": [
+                  "event_type",
+                  "export_definition",
+                  "export_path",
+                  "format",
+                  "interval_seconds",
+                  "credentials"
+                ]
+              },
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "event_type",
-              "btql_filter",
-              "interval_seconds",
-              "action"
             ],
             "description": "The configuration for the automation rule"
           }
@@ -4450,6 +4900,11 @@
               "$ref": "#/components/schemas/SavedFunctionId"
             },
             "description": "The list of scorers to use for online scoring"
+          },
+          "btql_filter": {
+            "type": "string",
+            "nullable": true,
+            "description": "Filter logs using BTQL"
           },
           "apply_to_root_span": {
             "type": "boolean",
@@ -4644,6 +5099,11 @@
             "type": "string",
             "nullable": true,
             "description": "Color of the tag for the UI"
+          },
+          "position": {
+            "type": "string",
+            "nullable": true,
+            "description": "An optional LexoRank-based string that sets the sort position for the tag in the UI"
           }
         },
         "required": [
@@ -6409,43 +6869,6 @@
             "nullable": true,
             "description": "Argument to the function, which can be any JSON serializable value"
           },
-          "fetch_row_fields": {
-            "type": "object",
-            "nullable": true,
-            "properties": {
-              "object_type": {
-                "type": "string",
-                "enum": [
-                  "project_logs",
-                  "experiment",
-                  "playground_logs"
-                ],
-                "description": "The type of the object you are logging to"
-              },
-              "object_id": {
-                "type": "string",
-                "description": "The id of the object you are logging to"
-              },
-              "row_id": {
-                "type": "string",
-                "description": "The row id to fetch"
-              },
-              "fields": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "The fields to fetch"
-              }
-            },
-            "required": [
-              "object_type",
-              "object_id",
-              "row_id",
-              "fields"
-            ],
-            "description": "If provided, the row id and fields to fetch before invoke"
-          },
           "expected": {
             "nullable": true,
             "description": "The expected output of the function"
@@ -6609,43 +7032,271 @@
         "description": "The view definition"
       },
       "ViewOptions": {
-        "type": "object",
-        "nullable": true,
-        "properties": {
-          "columnVisibility": {
+        "anyOf": [
+          {
             "type": "object",
-            "nullable": true,
-            "additionalProperties": {
-              "type": "boolean"
-            }
+            "properties": {
+              "viewType": {
+                "type": "string",
+                "enum": [
+                  "monitor"
+                ]
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "spanType": {
+                    "type": "string",
+                    "nullable": true,
+                    "enum": [
+                      "range",
+                      "frame",
+                      null
+                    ]
+                  },
+                  "rangeValue": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "frameStart": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "frameEnd": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "chartVisibility": {
+                    "type": "object",
+                    "nullable": true,
+                    "additionalProperties": {
+                      "type": "boolean"
+                    }
+                  },
+                  "projectId": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "type": {
+                    "type": "string",
+                    "nullable": true,
+                    "enum": [
+                      "project",
+                      "experiment",
+                      null
+                    ]
+                  },
+                  "groupBy": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              }
+            },
+            "required": [
+              "viewType",
+              "options"
+            ],
+            "title": "MonitorViewOptions"
           },
-          "columnOrder": {
-            "type": "array",
-            "nullable": true,
-            "items": {
-              "type": "string"
-            }
-          },
-          "columnSizing": {
+          {
             "type": "object",
-            "nullable": true,
-            "additionalProperties": {
-              "type": "number"
-            }
+            "properties": {
+              "columnVisibility": {
+                "type": "object",
+                "nullable": true,
+                "additionalProperties": {
+                  "type": "boolean"
+                }
+              },
+              "columnOrder": {
+                "type": "array",
+                "nullable": true,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "columnSizing": {
+                "type": "object",
+                "nullable": true,
+                "additionalProperties": {
+                  "type": "number"
+                }
+              },
+              "grouping": {
+                "type": "string",
+                "nullable": true
+              },
+              "rowHeight": {
+                "type": "string",
+                "nullable": true
+              },
+              "tallGroupRows": {
+                "type": "boolean",
+                "nullable": true
+              },
+              "layout": {
+                "type": "string",
+                "nullable": true
+              },
+              "chartHeight": {
+                "type": "number",
+                "nullable": true
+              },
+              "excludedMeasures": {
+                "type": "array",
+                "nullable": true,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "score",
+                        "metric",
+                        "metadata"
+                      ]
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "value"
+                  ]
+                }
+              },
+              "yMetric": {
+                "type": "object",
+                "nullable": true,
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "score",
+                      "metric",
+                      "metadata"
+                    ]
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ]
+              },
+              "xAxis": {
+                "type": "object",
+                "nullable": true,
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "score",
+                      "metric",
+                      "metadata"
+                    ]
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ]
+              },
+              "symbolGrouping": {
+                "type": "object",
+                "nullable": true,
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "score",
+                      "metric",
+                      "metadata"
+                    ]
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ]
+              },
+              "xAxisAggregation": {
+                "type": "string",
+                "nullable": true,
+                "enum": [
+                  "avg",
+                  "sum",
+                  "min",
+                  "max",
+                  "all",
+                  null
+                ]
+              },
+              "chartAnnotations": {
+                "type": "array",
+                "nullable": true,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "text"
+                  ]
+                }
+              },
+              "timeRangeFilter": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "from": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "from",
+                      "to"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "title": "TableViewOptions"
           },
-          "grouping": {
-            "type": "string",
-            "nullable": true
-          },
-          "rowHeight": {
-            "type": "string",
-            "nullable": true
-          },
-          "layout": {
-            "type": "string",
-            "nullable": true
+          {
+            "type": "null"
           }
-        },
+        ],
         "description": "Options for the view in the app"
       },
       "View": {
@@ -6679,9 +7330,10 @@
               "scorers",
               "logs",
               "agents",
+              "monitor",
               null
             ],
-            "description": "Type of table that the view corresponds to."
+            "description": "Type of object that the view corresponds to."
           },
           "name": {
             "type": "string",
@@ -6746,9 +7398,10 @@
               "scorers",
               "logs",
               "agents",
+              "monitor",
               null
             ],
-            "description": "Type of table that the view corresponds to."
+            "description": "Type of object that the view corresponds to."
           },
           "name": {
             "type": "string",
@@ -6807,9 +7460,10 @@
               "scorers",
               "logs",
               "agents",
+              "monitor",
               null
             ],
-            "description": "Type of table that the view corresponds to."
+            "description": "Type of object that the view corresponds to."
           },
           "name": {
             "type": "string",
@@ -6965,6 +7619,26 @@
                   "type": "string"
                 },
                 "description": "Emails of users to invite"
+              },
+              "service_accounts": {
+                "type": "array",
+                "nullable": true,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "token_name": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ]
+                },
+                "description": "Service accounts to create"
               },
               "send_invite_emails": {
                 "type": "boolean",
@@ -7643,6 +8317,16 @@
                       "nullable": true
                     }
                   },
+                  "function_type": {
+                    "type": "string",
+                    "enum": [
+                      "llm",
+                      "scorer",
+                      "task",
+                      "tool",
+                      null
+                    ]
+                  },
                   "name": {
                     "type": "string",
                     "nullable": true,
@@ -7660,6 +8344,16 @@
                 "properties": {
                   "inline_prompt": {
                     "$ref": "#/components/schemas/PromptData"
+                  },
+                  "function_type": {
+                    "type": "string",
+                    "enum": [
+                      "llm",
+                      "scorer",
+                      "task",
+                      "tool",
+                      null
+                    ]
                   },
                   "name": {
                     "type": "string",
@@ -7810,6 +8504,16 @@
                         "nullable": true
                       }
                     },
+                    "function_type": {
+                      "type": "string",
+                      "enum": [
+                        "llm",
+                        "scorer",
+                        "task",
+                        "tool",
+                        null
+                      ]
+                    },
                     "name": {
                       "type": "string",
                       "nullable": true,
@@ -7827,6 +8531,16 @@
                   "properties": {
                     "inline_prompt": {
                       "$ref": "#/components/schemas/PromptData"
+                    },
+                    "function_type": {
+                      "type": "string",
+                      "enum": [
+                        "llm",
+                        "scorer",
+                        "task",
+                        "tool",
+                        null
+                      ]
                     },
                     "name": {
                       "type": "string",
@@ -8014,6 +8728,13 @@
           "extra_messages": {
             "type": "string",
             "description": "A template path of extra messages to append to the conversion. These messages will be appended to the end of the conversation, after the last message."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional tags that will be added to the experiment."
           }
         },
         "required": [
@@ -8498,7 +9219,7 @@
           "$ref": "#/components/schemas/ViewType"
         },
         "required": false,
-        "description": "Type of table that the view corresponds to.",
+        "description": "Type of object that the view corresponds to.",
         "name": "view_type",
         "in": "query"
       },
@@ -8630,8 +9351,7 @@
                     "title": "project_score_type"
                   }
                 ]
-              },
-              "description": "The type of the configured score"
+              }
             }
           ]
         },
@@ -16432,8 +17152,7 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Acl"
-                  },
-                  "description": "An ACL grants a certain permission or role to a certain user or group on an object.\n\nACLs are inherited across the object hierarchy. So for example, if a user has read permissions on a project, they will also have read permissions on any experiment, dataset, etc. created within that project.\n\nTo restrict a grant to a particular sub-object, you may specify `restrict_object_type` in the ACL, as part of a direct permission grant or as part of a role."
+                  }
                 }
               }
             }

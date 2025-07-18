@@ -19,7 +19,7 @@ class TestProjectTagMigrator:
         migrator = ProjectTagMigrator(
             mock_source_client, mock_dest_client, temp_checkpoint_dir
         )
-        assert migrator.resource_name == "project_tags"
+        assert migrator.resource_name == "ProjectTags"
 
     async def test_get_resource_id(
         self,
@@ -148,125 +148,6 @@ class TestProjectTagMigrator:
         with pytest.raises(Exception, match="API Error"):
             await migrator.list_source_resources()
 
-    async def test_resource_exists_in_dest_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_project_tag,
-    ):
-        """Test checking if project tag exists in destination when it does."""
-        # Set up ID mapping
-        migrator = ProjectTagMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-        migrator.state.id_mapping["project-456"] = "dest-project-456"
-
-        # Mock existing tag in destination
-        existing_tag = Mock(spec=ProjectTag)
-        existing_tag.id = "dest-tag-123"
-        existing_tag.name = "Test Tag"
-        existing_tag.project_id = "dest-project-456"
-
-        mock_response = Mock()
-        mock_response.objects = [existing_tag]
-        mock_dest_client.with_retry.return_value = mock_response
-
-        result = await migrator.resource_exists_in_dest(sample_project_tag)
-
-        assert result == "dest-tag-123"
-
-    async def test_resource_exists_in_dest_not_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_project_tag,
-    ):
-        """Test checking if project tag exists in destination when it doesn't."""
-        # Set up ID mapping
-        migrator = ProjectTagMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-        migrator.state.id_mapping["project-456"] = "dest-project-456"
-
-        # Mock empty response
-        mock_response = Mock()
-        mock_response.objects = []
-        mock_dest_client.with_retry.return_value = mock_response
-
-        result = await migrator.resource_exists_in_dest(sample_project_tag)
-
-        assert result is None
-
-    async def test_resource_exists_in_dest_no_project_mapping(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_project_tag,
-    ):
-        """Test checking existence when no project mapping exists."""
-        migrator = ProjectTagMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-        # No ID mapping set up
-
-        result = await migrator.resource_exists_in_dest(sample_project_tag)
-
-        assert result is None
-
-    async def test_resource_exists_in_dest_async_iterator(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_project_tag,
-    ):
-        """Test existence check with async iterator response."""
-        # Set up ID mapping
-        migrator = ProjectTagMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-        migrator.state.id_mapping["project-456"] = "dest-project-456"
-
-        # Mock existing tag in destination
-        existing_tag = Mock(spec=ProjectTag)
-        existing_tag.id = "dest-tag-456"
-        existing_tag.name = "Test Tag"
-        existing_tag.project_id = "dest-project-456"
-
-        async def async_iter():
-            yield existing_tag
-
-        mock_response = Mock()
-        mock_response.__aiter__ = lambda self: async_iter()
-        mock_dest_client.with_retry.return_value = mock_response
-
-        result = await migrator.resource_exists_in_dest(sample_project_tag)
-
-        assert result == "dest-tag-456"
-
-    async def test_resource_exists_in_dest_error(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_project_tag,
-    ):
-        """Test error handling during existence check."""
-        # Set up ID mapping
-        migrator = ProjectTagMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-        migrator.state.id_mapping["project-456"] = "dest-project-456"
-
-        mock_dest_client.with_retry.side_effect = Exception("API Error")
-
-        result = await migrator.resource_exists_in_dest(sample_project_tag)
-
-        assert result is None
-
     async def test_migrate_resource_success_full_fields(
         self,
         mock_source_client,
@@ -309,6 +190,17 @@ class TestProjectTagMigrator:
         minimal_tag.created = "2023-01-01T00:00:00Z"
         minimal_tag.description = None
         minimal_tag.color = None
+
+        # Mock the to_dict method
+        minimal_tag.to_dict.return_value = {
+            "id": "tag-123",
+            "name": "Minimal Tag",
+            "project_id": "project-456",
+            "user_id": "user-789",
+            "created": "2023-01-01T00:00:00Z",
+            "description": None,
+            "color": None,
+        }
 
         # Set up ID mapping
         migrator = ProjectTagMigrator(

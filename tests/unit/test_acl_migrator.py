@@ -10,18 +10,33 @@ from braintrust_migrate.resources.acls import ACLMigrator
 
 @pytest.fixture
 def acl_with_user():
-    """Create an ACL with user_id (should be skipped)."""
+    """Create an ACL with user_id."""
     acl = Mock(spec=ACL)
     acl.id = "acl-user-123"
     acl.object_type = "project"
     acl.object_id = "project-456"
-    acl.user_id = "user-789"
+    acl.user_id = "user-123"
     acl.group_id = None
     acl.permission = "read"
     acl.role_id = None
     acl.restrict_object_type = None
     acl.object_org_id = "org-456"
     acl.created = "2024-01-01T00:00:00Z"
+
+    # Mock the to_dict method
+    acl.to_dict.return_value = {
+        "id": "acl-user-123",
+        "object_type": "project",
+        "object_id": "project-456",
+        "user_id": "user-123",
+        "group_id": None,
+        "permission": "read",
+        "role_id": None,
+        "restrict_object_type": None,
+        "object_org_id": "org-456",
+        "created": "2024-01-01T00:00:00Z",
+    }
+
     return acl
 
 
@@ -36,9 +51,24 @@ def acl_with_role():
     acl.group_id = "group-789"
     acl.permission = None
     acl.role_id = "role-123"
-    acl.restrict_object_type = "experiment"
+    acl.restrict_object_type = None
     acl.object_org_id = "org-456"
     acl.created = "2024-01-01T00:00:00Z"
+
+    # Mock the to_dict method
+    acl.to_dict.return_value = {
+        "id": "acl-role-123",
+        "object_type": "project",
+        "object_id": "project-456",
+        "user_id": None,
+        "group_id": "group-789",
+        "permission": None,
+        "role_id": "role-123",
+        "restrict_object_type": None,
+        "object_org_id": "org-456",
+        "created": "2024-01-01T00:00:00Z",
+    }
+
     return acl
 
 
@@ -56,6 +86,21 @@ def acl_with_permission():
     acl.restrict_object_type = None
     acl.object_org_id = "org-456"
     acl.created = "2024-01-01T00:00:00Z"
+
+    # Mock the to_dict method
+    acl.to_dict.return_value = {
+        "id": "acl-permission-123",
+        "object_type": "dataset",
+        "object_id": "dataset-456",
+        "user_id": None,
+        "group_id": "group-789",
+        "permission": "update",
+        "role_id": None,
+        "restrict_object_type": None,
+        "object_org_id": "org-456",
+        "created": "2024-01-01T00:00:00Z",
+    }
+
     return acl
 
 
@@ -176,74 +221,6 @@ class TestACLMigrator:
         # Should not raise an exception, just return empty list
         acls = await migrator.list_source_resources()
         assert len(acls) == 0
-
-    async def test_resource_exists_in_dest_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_acl,
-    ):
-        """Test finding existing equivalent ACL in destination."""
-        # Mock existing ACL in destination
-        dest_acl = Mock(spec=ACL)
-        dest_acl.id = "dest-acl-123"
-        dest_acl.object_type = "project"
-        dest_acl.object_id = "dest-project-456"  # Mapped object ID
-        dest_acl.group_id = "dest-group-789"  # Mapped group ID
-        dest_acl.permission = "read"
-        dest_acl.role_id = None
-        dest_acl.restrict_object_type = None
-
-        mock_dest_client.with_retry.return_value = [dest_acl]
-
-        migrator = ACLMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        # Set up ID mappings
-        migrator.state.id_mapping["project-456"] = "dest-project-456"
-        migrator.state.id_mapping["group-789"] = "dest-group-789"
-
-        result = await migrator.resource_exists_in_dest(sample_acl)
-
-        assert result == "dest-acl-123"
-
-    async def test_resource_exists_in_dest_not_found(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_acl,
-    ):
-        """Test ACL not found in destination."""
-        mock_dest_client.with_retry.return_value = []
-
-        migrator = ACLMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_acl)
-
-        assert result is None
-
-    async def test_resource_exists_in_dest_error(
-        self,
-        mock_source_client,
-        mock_dest_client,
-        temp_checkpoint_dir,
-        sample_acl,
-    ):
-        """Test error handling in resource_exists_in_dest."""
-        mock_dest_client.with_retry.side_effect = Exception("API Error")
-
-        migrator = ACLMigrator(
-            mock_source_client, mock_dest_client, temp_checkpoint_dir
-        )
-
-        result = await migrator.resource_exists_in_dest(sample_acl)
-
-        assert result is None
 
     async def test_migrate_resource_with_user_id_skipped(
         self,
