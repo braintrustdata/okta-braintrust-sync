@@ -1,10 +1,12 @@
 # Braintrust Migration Tool
 
+> **⚠️ WARNING: This tool is primarily intended for migrating a small amount of data (e.g., data used during POCs or initial testing). Large-scale migrations—especially of logs and experiments—have not been thoroughly tested and may not be reliable for production-scale data. Use with caution for anything beyond POC/test data.**
+
 A Python CLI & library for migrating Braintrust organizations with maximum fidelity, leveraging the official `braintrust-api-py` SDK.
 
 ## Overview
 
-This tool provides comprehensive migration capabilities for Braintrust organizations, handling everything from AI provider credentials to complex experiment data. It's designed for:
+This tool provides migration capabilities for Braintrust organizations, handling everything from AI provider credentials to project-level data. **It is best suited for small-scale migrations, such as moving POC/test data to a new deployment.**
 
 - **Organization administrators** migrating between environments (dev → staging → prod)
 - **Teams** consolidating multiple organizations
@@ -13,24 +15,19 @@ This tool provides comprehensive migration capabilities for Braintrust organizat
 
 ### Key Capabilities
 
-- **Complete Resource Coverage**: Migrates all Braintrust resources including AI secrets, datasets, prompts, functions, experiments, and more
-- **Smart Dependency Resolution**: Handles complex circular dependencies between prompts and functions
-- **Organization vs Project Scope**: Efficiently migrates org-level resources once, then project-level resources per project
+- **Resource Coverage**: Migrates most Braintrust resources including AI secrets, datasets, prompts, functions, experiments, and more
+- **Dependency Resolution**: Handles resource dependencies (e.g., functions referenced by prompts, datasets referenced by experiments)
+- **Organization vs Project Scope**: Org-level resources are migrated once, project-level resources per project
 - **Real-time Progress**: Live progress indicators and detailed migration reports
-- **Resume & Recovery**: Checkpoint-based resumption for interrupted migrations
-- **Security-First**: Handles sensitive resources like AI provider credentials with appropriate warnings
 
 ## Features
 
 ### Migration Features
-- **Complete Migration**: All resource types supported with proper dependency ordering
-- **Incremental Sync**: Skip unchanged resources using content checksums
-- **Two-Pass Migration**: Intelligent handling of circular dependencies (prompts ↔ functions)
+- **Dependency-Aware Migration**: Resources are migrated in an order that respects dependencies (see below)
 - **Organization Scoping**: AI secrets, roles, and groups migrated once at org level
 - **Batch Processing**: Configurable batch sizes for optimal performance
 
 ### Reliability Features
-- **Checkpointing**: Resume interrupted migrations from exact stopping point
 - **Retry Logic**: Exponential backoff with configurable retry attempts
 - **Validation**: Pre-flight connectivity and permission checks
 - **Error Recovery**: Detailed error reporting with actionable guidance
@@ -197,7 +194,7 @@ braintrust-migrate validate --help
 
 ### Resource Migration Order
 
-The migration follows a carefully designed order to handle dependencies:
+The migration follows a dependency-aware order:
 
 #### Organization-Scoped Resources (Migrated Once)
 1. **AI Secrets** - AI provider credentials (OpenAI, Anthropic, etc.)
@@ -208,30 +205,21 @@ The migration follows a carefully designed order to handle dependencies:
 4. **Datasets** - Training and evaluation data
 5. **Project Tags** - Project-level metadata tags
 6. **Span Iframes** - Custom span visualization components
-7. **Prompts (Pass 1)** - Simple prompts without function dependencies
-8. **Functions** - Tools, scorers, tasks, and LLMs 
+7. **Functions** - Tools, scorers, tasks, and LLMs (migrated before prompts)
+8. **Prompts** - Template definitions that can use functions as tools
 9. **Project Scores** - Scoring configurations
-10. **Prompts (Pass 2)** - Complex prompts that use functions as tools
-11. **Agents** - AI agent configurations
-12. **Experiments** - Evaluation runs and results  
-13. **Logs** - Experiment execution traces
-14. **Views** - Custom project views
+10. **Experiments** - Evaluation runs and results  
+11. **Logs** - Experiment execution traces
+12. **Views** - Custom project views
 
 ### Smart Dependency Handling
 
-**Circular Dependency Resolution:**
-The tool uses a sophisticated two-pass system for prompts and functions:
-
-```
-Pass 1: Migrate simple prompts (no function dependencies)
-Pass 2: Migrate all functions (can reference prompts from Pass 1)
-Pass 3: Migrate complex prompts (can use functions as tools)
-```
-
-**Organization vs Project Scope:**
-- **Organization resources** (AI secrets, roles, groups) are migrated **once** regardless of project count
-- **Project resources** are migrated **for each project**
-- This eliminates redundant "already exists" messages and improves performance
+- **Functions are migrated before prompts** to ensure all function references in prompts can be resolved.
+- **Experiments** handle dependencies on datasets and other experiments (via `base_exp_id`) in a single pass with dependency-aware ordering.
+- **ID mapping and dependency resolution** are used throughout to ensure references are updated to the new organization/project.
+- **No two-pass system**: Prompts and functions are migrated in a single pass each, in the order above.
+- **ACLs**: Support is present in the codebase but may be experimental or disabled by default.
+- **Agents and users**: Not supported for migration (users are org-specific; agents are not present in the codebase).
 
 ### Progress Monitoring
 
@@ -252,21 +240,23 @@ After migration, you'll get:
 
 ## Resource Types
 
-### AI Secrets (Organization-Scoped)
-Manages AI provider credentials:
-- **Supported Providers**: OpenAI, Anthropic, Google, AWS Bedrock, Mistral, Azure, and more
-- **Security**: Only metadata is migrated; actual API keys must be manually configured
-- **Single Migration**: Migrated once at organization level
+The following resource types are supported:
 
-### Functions & Prompts (Complex Dependencies)
-- **Functions**: Custom tools, scorers, tasks, and LLM configurations
-- **Prompts**: Template definitions that can use functions as tools
-- **Circular Dependencies**: Handled via intelligent two-pass migration
+- **AI Secrets** (organization-scoped)
+- **Roles** (organization-scoped)
+- **Groups** (organization-scoped)
+- **Datasets**
+- **Project Tags**
+- **Span Iframes**
+- **Functions**
+- **Prompts**
+- **Project Scores**
+- **Experiments**
+- **Logs**
+- **Views**
+- **ACLs** (experimental; may be disabled)
 
-### Experiments & Logs (Data-Heavy)
-- **Experiments**: Evaluation runs with complete metadata
-- **Logs**: Execution traces and span data
-- **Batch Processing**: Optimized for large datasets
+> **Note:** Agents and users are not supported for migration.
 
 ## Troubleshooting
 
@@ -553,7 +543,7 @@ This project is licensed under the MIT License. See the LICENSE file for details
 ```bash
 braintrust-migrate validate                    # Test setup
 braintrust-migrate migrate                     # Full migration
-braintrust-migrate migrate --dry-run          # Validation only
+braintrust-migrate migrate --dry-run           # Validation only
 braintrust-migrate migrate --resources ai_secrets,datasets  # Selective migration
 ```
 
@@ -565,6 +555,7 @@ braintrust-migrate migrate --resources ai_secrets,datasets  # Selective migratio
 
 ### Important Notes
 - **AI Secrets**: Only metadata migrated; manually configure actual API keys
-- **Two-Pass System**: Prompts and functions handled via intelligent dependency resolution
+- **Dependency Order**: Functions are migrated before prompts; all dependencies are resolved via ID mapping
 - **Organization Scope**: Some resources migrated once, others per project
-- **Resume Capability**: Interrupted migrations automatically resume from checkpoints 
+- **Resume Capability**: Interrupted migrations automatically resume from checkpoints
+- **Not for Large-Scale Data**: This tool is not thoroughly tested for large-scale logs or experiments. Use for POC/test data only. 
