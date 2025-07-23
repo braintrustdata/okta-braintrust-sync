@@ -97,7 +97,7 @@ class BaseAPIClient(ABC):
         """Close the HTTP client and cleanup resources."""
         if self._client:
             await self._client.aclose()
-        await self._throttler.close()
+        # asyncio-throttle doesn't have a close method, just let it be garbage collected
     
     @abstractmethod
     def _get_auth_headers(self) -> Dict[str, str]:
