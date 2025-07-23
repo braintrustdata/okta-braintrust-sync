@@ -1,0 +1,57 @@
+# Single Organization Okta-Braintrust Sync Configuration
+# Simple example syncing to one Braintrust organization
+
+# Okta source configuration
+okta:
+  domain: "${OKTA_DOMAIN}"
+  api_token: "${OKTA_API_TOKEN}"
+
+# Single Braintrust organization
+braintrust_orgs:
+  main:
+    api_key: "${BT_API_KEY}"
+    url: "https://api.braintrust.dev"
+
+# Hybrid sync modes
+sync_modes:
+  declarative:
+    enabled: true
+    schedule: "0 */8 * * *"           # Every 8 hours
+  
+  realtime:
+    enabled: true
+    webhook_port: 8080
+    queue_backend: "memory"           # Simple memory queue
+    critical_events_only: true
+
+# Simple sync rules
+sync_rules:
+  users:
+    enabled: true
+    identity_mapping:
+      strategy: "email"
+    mappings:
+      # Sync all active users
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["main"]
+
+  groups:
+    enabled: true
+    mappings:
+      # Sync all Okta groups
+      - okta_group_filter: 'type eq "OKTA_GROUP"'
+        braintrust_orgs: ["main"]
+        name_transform: "{group.name}"
+
+# Default sync options
+sync_options:
+  dry_run: false
+  batch_size: 50
+  remove_extra: false
+
+# Basic audit logging
+audit:
+  enabled: true
+  log_level: "INFO"
+  log_format: "text"
+  retention_days: 30

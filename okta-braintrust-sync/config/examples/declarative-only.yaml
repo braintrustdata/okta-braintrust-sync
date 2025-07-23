@@ -1,0 +1,74 @@
+# Declarative-Only Okta-Braintrust Sync Configuration
+# This example shows batch-only sync (no real-time webhooks)
+
+# Okta source configuration
+okta:
+  domain: "${OKTA_DOMAIN}"
+  api_token: "${OKTA_API_TOKEN}"
+  rate_limit_per_minute: 600
+  timeout_seconds: 30
+
+# Target Braintrust organizations
+braintrust_orgs:
+  production:
+    api_key: "${BT_PROD_API_KEY}"
+    url: "https://api.braintrust.dev"
+
+# Sync modes - only declarative enabled
+sync_modes:
+  declarative:
+    enabled: true
+    schedule: "0 */6 * * *"           # Every 6 hours
+    full_reconciliation: "0 3 * * 1"  # Weekly full sync on Monday 3 AM
+    max_concurrent_orgs: 1
+  
+  realtime:
+    enabled: false                    # Disabled
+
+# Sync rules
+sync_rules:
+  users:
+    enabled: true
+    identity_mapping:
+      strategy: "email"
+    create_missing: true
+    update_existing: true
+    sync_profile_fields:
+      - "firstName"
+      - "lastName" 
+      - "email"
+      - "login"
+    mappings:
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["production"]
+        enabled: true
+
+  groups:
+    enabled: true
+    create_missing: true
+    update_existing: true
+    sync_members: true
+    sync_description: true
+    mappings:
+      - okta_group_filter: 'type eq "OKTA_GROUP"'
+        braintrust_orgs: ["production"]
+        name_transform: "okta-{group.name}"
+        enabled: true
+
+# Sync options
+sync_options:
+  dry_run: false
+  batch_size: 100                   # Larger batches for batch processing
+  max_retries: 3
+  retry_delay_seconds: 2.0
+  remove_extra: false
+  continue_on_error: true
+
+# Audit configuration
+audit:
+  enabled: true
+  log_level: "INFO"
+  log_format: "json"
+  log_file: "./logs/declarative-sync-{timestamp}.log"
+  retention_days: 90
+  include_sensitive_data: false
