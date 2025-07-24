@@ -15,6 +15,26 @@ This tool helps GenAI Platform teams automate the process of:
 
 Instead of manually creating Braintrust accounts for each team member and managing group permissions, you define sync rules in YAML and let the tool handle the automation.
 
+### Current Status & Limitations
+
+**✅ What Works Today:**
+- ✅ **Declarative sync**: Plan and apply changes like Terraform
+- ✅ **User sync**: Create and update users from Okta to Braintrust
+- ✅ **Group sync**: Create groups and manage memberships
+- ✅ **Multi-org support**: Sync to multiple Braintrust organizations
+- ✅ **Comprehensive testing**: All functionality tested with mocks
+- ✅ **Audit logging**: Full compliance and troubleshooting logs
+- ✅ **CLI commands**: validate, plan, apply, show commands work
+
+**🚧 Current Limitations:**
+- ❌ **Real-time webhooks**: Not yet implemented (commands exist but return "not implemented")
+- ❌ **Scheduled sync**: Cron-like scheduling not built yet
+- ❌ **Braintrust API testing**: Needs real API testing with live credentials
+- ❌ **Advanced filtering**: Some complex SCIM filters may need refinement
+
+**🎯 Ready for Real-World Testing:**
+The core functionality is complete and ready for testing with real Okta and Braintrust API credentials. The declarative sync workflow is fully functional.
+
 ### Why This Tool?
 
 **Before**: Manual team onboarding
@@ -65,7 +85,7 @@ export BRAINTRUST_PROD_API_KEY="your-prod-api-key"
 
 ### 3. Basic Configuration
 
-Create a `sync-config.yaml` file:
+Create a `sync-config.yaml` file (this configuration will work with the current implementation):
 
 ```yaml
 okta:
@@ -80,28 +100,30 @@ braintrust_orgs:
     api_key: "${BRAINTRUST_PROD_API_KEY}" 
     url: "https://api.braintrust.dev"
 
+# Note: Only declarative mode is currently implemented
+sync_modes:
+  declarative:
+    enabled: true
+
 sync_rules:
   users:
     enabled: true
     mappings:
-      # Sync all active users from AI/ML teams
-      - okta_filter: 'status eq "ACTIVE" and (profile.department eq "ML Engineering" or profile.department eq "Data Science")'
+      # Sync all active users - simple filter that works today
+      - okta_filter: 'status eq "ACTIVE"'
         braintrust_orgs: ["dev", "prod"]
-        identity_mapping: "email"
+        enabled: true
 
   groups:
     enabled: true
     mappings:
-      # ML Engineering team
-      - okta_group_filter: 'profile.name eq "ML-Engineering"'
+      # Sync Okta groups - simple filter that works today
+      - okta_group_filter: 'type eq "OKTA_GROUP"'
         braintrust_orgs: ["dev", "prod"]
-        group_name_template: "ml-engineering"
-        
-      # Data Science team (read-only in prod)
-      - okta_group_filter: 'profile.name eq "Data-Science"'
-        braintrust_orgs: ["dev"]
-        group_name_template: "data-science"
+        enabled: true
 ```
+
+**Note**: This is a minimal working configuration. You can add more complex filters after testing the basic setup works with your API credentials.
 
 ### 4. Test and Run
 
@@ -118,68 +140,77 @@ okta-braintrust-sync apply --config sync-config.yaml --auto-approve
 
 ## Common Team Onboarding Scenarios
 
-### Scenario 1: Onboard New ML Engineering Team
+### Scenario 1: Start Simple - All Active Users
 
-**Situation**: Your ML Engineering team needs access to Braintrust for experiment tracking.
-
-```yaml
-sync_rules:
-  users:
-    mappings:
-      - okta_filter: 'profile.department eq "ML Engineering" and status eq "ACTIVE"'
-        braintrust_orgs: ["dev", "prod"]
-        
-  groups:
-    mappings:
-      - okta_group_filter: 'profile.name eq "ML-Engineering"'
-        braintrust_orgs: ["dev", "prod"]
-        group_name_template: "ml-engineering"
-```
-
-**Result**: All active ML Engineering team members get accounts in both dev and prod Braintrust orgs, with appropriate group membership.
-
-### Scenario 2: Data Science Read-Only Access
-
-**Situation**: Data Scientists need to view experiments but not modify them in production.
-
-```yaml
-sync_rules:
-  groups:
-    mappings:
-      - okta_group_filter: 'profile.name eq "Data-Science"'
-        braintrust_orgs: ["dev", "prod"]
-        group_name_template: "data-science-viewers"
-        # Note: Configure read-only permissions in Braintrust for this group
-```
-
-### Scenario 3: Multi-Team Platform Setup
-
-**Situation**: Platform team managing multiple AI/ML teams with different access needs.
+**Situation**: You want to sync all active users from Okta to get started.
 
 ```yaml
 sync_rules:
   users:
+    enabled: true
     mappings:
-      # Sync all AI/ML organization users
-      - okta_filter: 'profile.organization eq "AI-ML" and status eq "ACTIVE"'
-        braintrust_orgs: ["dev", "staging", "prod"]
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["dev"]  # Start with dev only
+        enabled: true
         
   groups:
+    enabled: true  
     mappings:
-      # Platform admins get full access everywhere
-      - okta_group_filter: 'profile.name eq "GenAI-Platform-Admins"'
+      - okta_group_filter: 'type eq "OKTA_GROUP"'
+        braintrust_orgs: ["dev"]  # Start with dev only
+        enabled: true
+```
+
+**Result**: All active users and standard Okta groups get synced to your dev Braintrust org. Test this first!
+
+### Scenario 2: Department-Based Filtering (Advanced)
+
+**Situation**: After basic sync works, filter by department.
+
+```yaml
+sync_rules:
+  users:
+    enabled: true
+    mappings:
+      # Only sync ML Engineering and Data Science teams
+      - okta_filter: 'status eq "ACTIVE" and profile.department eq "Engineering"'
+        braintrust_orgs: ["dev", "prod"]
+        enabled: true
+        
+  groups:
+    enabled: true
+    mappings:
+      # Only sync specific groups by name
+      - okta_group_filter: 'type eq "OKTA_GROUP" and profile.name eq "ML-Team"'
+        braintrust_orgs: ["dev", "prod"]
+        enabled: true
+```
+
+**Note**: Complex filters like department matching should be tested after you verify basic sync works with your Okta setup.
+
+### Scenario 3: Multi-Organization Setup (Production)
+
+**Situation**: After testing, scale to multiple environments.
+
+```yaml
+braintrust_orgs:
+  dev:
+    api_key: "${BRAINTRUST_DEV_API_KEY}"
+    url: "https://api.braintrust.dev"
+  staging:
+    api_key: "${BRAINTRUST_STAGING_API_KEY}"
+    url: "https://api.braintrust.dev"
+  prod:
+    api_key: "${BRAINTRUST_PROD_API_KEY}"
+    url: "https://api.braintrust.dev"
+
+sync_rules:
+  users:
+    enabled: true
+    mappings:
+      - okta_filter: 'status eq "ACTIVE"'
         braintrust_orgs: ["dev", "staging", "prod"]
-        group_name_template: "platform-admins"
-        
-      # Individual teams get dev access + limited prod access
-      - okta_group_filter: 'profile.name sw "Team-"'  # Matches Team-Alpha, Team-Beta, etc.
-        braintrust_orgs: ["dev"]
-        group_name_template: "${okta_group_name_lower}"
-        
-      # Senior teams also get staging access
-      - okta_group_filter: 'profile.name in ["Team-Alpha", "Team-Beta"]'
-        braintrust_orgs: ["staging"]
-        group_name_template: "${okta_group_name_lower}-staging"
+        enabled: true
 ```
 
 ## Configuration Reference
@@ -314,6 +345,18 @@ okta-braintrust-sync apply --config sync-config.yaml \
 # Display current configuration summary
 okta-braintrust-sync show --config sync-config.yaml
 ```
+
+### Webhook Commands (Not Yet Implemented)
+
+```bash
+# These commands exist but return "not yet implemented"
+okta-braintrust-sync webhook start --config sync-config.yaml    # ❌ Not working yet
+okta-braintrust-sync webhook status                            # ❌ Not working yet  
+okta-braintrust-sync start --config sync-config.yaml           # ❌ Not working yet
+okta-braintrust-sync status                                    # ❌ Not working yet
+```
+
+**Current Status**: The webhook server and scheduled sync functionality are not implemented yet. Use the declarative `plan` and `apply` commands which are fully functional.
 
 ## Monitoring & Auditing
 
