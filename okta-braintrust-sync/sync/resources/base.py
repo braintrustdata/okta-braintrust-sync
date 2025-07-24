@@ -172,6 +172,18 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
         pass
     
     @abstractmethod
+    def get_braintrust_resource_identifier(self, resource: BraintrustResourceType) -> str:
+        """Get unique identifier for a Braintrust resource.
+        
+        Args:
+            resource: Braintrust resource
+            
+        Returns:
+            Unique identifier (usually ID or email)
+        """
+        pass
+    
+    @abstractmethod
     def should_sync_resource(
         self,
         okta_resource: OktaResourceType,
@@ -299,7 +311,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             # Get existing Braintrust resources for comparison
             braintrust_resources = await self.get_braintrust_resources(braintrust_org)
             braintrust_resource_map = {
-                self.get_resource_identifier(res): res for res in braintrust_resources
+                self.get_braintrust_resource_identifier(res): res for res in braintrust_resources
             }
             
             # Process each Okta resource
@@ -316,9 +328,18 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                 
                 if existing_mapping:
                     # Resource exists - check if update is needed
-                    braintrust_resource = braintrust_resource_map.get(
-                        existing_mapping.braintrust_id
-                    )
+                    # Try to find the resource by braintrust_id first, then by identifier
+                    braintrust_resource = None
+                    for identifier, resource in braintrust_resource_map.items():
+                        # Handle both dict and object formats
+                        resource_id = (
+                            resource.get('id') if isinstance(resource, dict)
+                            else getattr(resource, 'id', None)
+                        )
+                        if (resource_id == existing_mapping.braintrust_id or
+                            identifier == okta_id):
+                            braintrust_resource = resource
+                            break
                     
                     if braintrust_resource:
                         updates = self.calculate_updates(okta_resource, braintrust_resource)
@@ -378,10 +399,12 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             return plan_items
             
         except Exception as e:
+            import traceback
             self._logger.error(
                 "Failed to generate organization sync plan",
                 braintrust_org=braintrust_org,
                 error=str(e),
+                traceback=traceback.format_exc(),
             )
             raise
     
@@ -564,7 +587,11 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             plan_item.braintrust_org,
         )
         
-        braintrust_id = getattr(braintrust_resource, 'id', str(braintrust_resource))
+        # Handle both dict and object formats
+        if isinstance(braintrust_resource, dict):
+            braintrust_id = braintrust_resource.get('id', str(braintrust_resource))
+        else:
+            braintrust_id = getattr(braintrust_resource, 'id', str(braintrust_resource))
         
         # Update state mapping
         current_state = self.state_manager.get_current_state()

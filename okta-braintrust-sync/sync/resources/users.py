@@ -249,24 +249,65 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
         """Get unique identifier for an Okta user.
         
         Args:
-            resource: Okta user
+            resource: Okta user (may be dict or object)
             
         Returns:
             Unique identifier (usually email)
         """
+        # Handle both dict and object formats
+        def get_email():
+            if isinstance(resource, dict):
+                profile = resource.get("profile", {})
+                if isinstance(profile, dict):
+                    return profile.get("email", "")
+                else:
+                    # Profile might be an object
+                    return getattr(profile, 'email', '') if profile else ''
+            else:
+                # For OktaUser objects, profile is a dictionary
+                return resource.profile.get("email", "")
+        
+        def get_custom_field(field_name):
+            if isinstance(resource, dict):
+                profile = resource.get("profile", {})
+                if isinstance(profile, dict):
+                    return profile.get(field_name, profile.get("email", ""))
+                else:
+                    # Profile might be an object
+                    return getattr(profile, field_name, getattr(profile, 'email', '')) if profile else ''
+            else:
+                # For OktaUser objects, profile is a dictionary
+                return resource.profile.get(field_name, resource.profile.get("email", ""))
+        
         if self.identity_mapping_strategy == "email":
-            return resource.profile.email
+            return get_email()
         elif self.identity_mapping_strategy == "custom_field":
             # Use a custom field from the user profile
             custom_field = self.custom_field_mappings.get("identity_field", "email")
-            return getattr(resource.profile, custom_field, resource.profile.email)
+            return get_custom_field(custom_field)
         elif self.identity_mapping_strategy == "mapping_file":
             # For mapping file strategy, use email as fallback
             # In practice, this would load from an external mapping file
-            return resource.profile.email
+            return get_email()
         else:
             # Default to email
-            return resource.profile.email
+            return get_email()
+    
+    def get_braintrust_resource_identifier(self, resource: BraintrustUser) -> str:
+        """Get unique identifier for a Braintrust user.
+        
+        Args:
+            resource: Braintrust user (may be dict or object)
+            
+        Returns:
+            Unique identifier (usually email)
+        """
+        # Handle both dict and object formats
+        if isinstance(resource, dict):
+            return resource.get('email', '') or resource.get('id', '')
+        else:
+            # Braintrust users have email as a direct attribute, not under profile
+            return getattr(resource, 'email', '') or getattr(resource, 'id', '')
     
     def should_sync_resource(
         self,
@@ -287,11 +328,19 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
         try:
             # Check if user is active
             if sync_rules.get("only_active_users", True):
-                if okta_resource.status != "ACTIVE":
+                user_status = (
+                    okta_resource.get("status") if isinstance(okta_resource, dict)
+                    else okta_resource.status
+                )
+                if user_status != "ACTIVE":
+                    user_id = (
+                        okta_resource.get("id") if isinstance(okta_resource, dict)
+                        else okta_resource.id
+                    )
                     self._logger.debug(
                         "Skipping inactive user",
-                        user_id=okta_resource.id,
-                        status=okta_resource.status,
+                        user_id=user_id,
+                        status=user_status,
                         braintrust_org=braintrust_org,
                     )
                     return False
@@ -299,14 +348,23 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             # Check email domain filters
             email_domain_filters = sync_rules.get("email_domain_filters", {}).get(braintrust_org)
             if email_domain_filters:
-                user_domain = okta_resource.profile.email.split("@")[1].lower()
+                # Get user email safely
+                if isinstance(okta_resource, dict):
+                    user_email = okta_resource.get("profile", {}).get("email", "")
+                else:
+                    user_email = okta_resource.profile.get("email", "")
+                
+                if not user_email or "@" not in user_email:
+                    return False
+                    
+                user_domain = user_email.split("@")[1].lower()
                 
                 # Include filters - if specified, user domain must be in the list
                 include_domains = email_domain_filters.get("include", [])
                 if include_domains and user_domain not in [d.lower() for d in include_domains]:
                     self._logger.debug(
                         "User domain not in include list",
-                        user_email=okta_resource.profile.email,
+                        user_email=user_email,
                         user_domain=user_domain,
                         include_domains=include_domains,
                         braintrust_org=braintrust_org,
@@ -318,7 +376,7 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                 if exclude_domains and user_domain in [d.lower() for d in exclude_domains]:
                     self._logger.debug(
                         "User domain in exclude list",
-                        user_email=okta_resource.profile.email,
+                        user_email=user_email,
                         user_domain=user_domain,
                         exclude_domains=exclude_domains,
                         braintrust_org=braintrust_org,
@@ -404,16 +462,23 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             # Extract current Okta user data
             okta_data = self._extract_user_data(okta_resource)
             
+            # Handle both dict and object formats for Braintrust resource
+            def get_braintrust_field(field_name: str) -> str:
+                if isinstance(braintrust_resource, dict):
+                    return braintrust_resource.get(field_name, "")
+                else:
+                    return getattr(braintrust_resource, field_name, "")
+            
             # Compare first name
-            if okta_data["given_name"] != getattr(braintrust_resource, "given_name", ""):
+            if okta_data["given_name"] != get_braintrust_field("given_name"):
                 updates["given_name"] = okta_data["given_name"]
             
             # Compare last name
-            if okta_data["family_name"] != getattr(braintrust_resource, "family_name", ""):
+            if okta_data["family_name"] != get_braintrust_field("family_name"):
                 updates["family_name"] = okta_data["family_name"]
             
             # Compare email (usually shouldn't change, but handle it)
-            if okta_data["email"] != getattr(braintrust_resource, "email", ""):
+            if okta_data["email"] != get_braintrust_field("email"):
                 updates["email"] = okta_data["email"]
             
             # Handle custom field mappings
@@ -422,26 +487,45 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                     if okta_field in ["given_name", "family_name", "email"]:
                         continue  # Already handled above
                     
-                    okta_value = getattr(okta_resource.profile, okta_field, None)
-                    braintrust_value = getattr(braintrust_resource, braintrust_field, None)
+                    # Handle both dict and object formats
+                    if isinstance(okta_resource, dict):
+                        profile = okta_resource.get("profile", {})
+                        okta_value = profile.get(okta_field)
+                    else:
+                        okta_value = okta_resource.profile.get(okta_field)
+                    braintrust_value = get_braintrust_field(braintrust_field)
                     
                     if okta_value != braintrust_value:
                         updates[braintrust_field] = okta_value
             
+            # Get user ID safely
+            okta_user_id = (
+                okta_resource.get("id") if isinstance(okta_resource, dict)
+                else okta_resource.id
+            )
+            
             self._logger.debug(
                 "Calculated user updates",
-                okta_user_id=okta_resource.id,
-                braintrust_user_id=getattr(braintrust_resource, "id", "unknown"),
+                okta_user_id=okta_user_id,
+                braintrust_user_id=get_braintrust_field("id") or "unknown",
                 updates=list(updates.keys()),
             )
             
             return updates
             
         except Exception as e:
+            okta_user_id = (
+                okta_resource.get("id") if isinstance(okta_resource, dict)
+                else okta_resource.id
+            )
             self._logger.error(
                 "Failed to calculate user updates",
-                okta_user_id=okta_resource.id,
-                braintrust_user_id=getattr(braintrust_resource, "id", "unknown"),
+                okta_user_id=okta_user_id,
+                braintrust_user_id=(
+                    braintrust_resource.get("id", "unknown") 
+                    if isinstance(braintrust_resource, dict) 
+                    else getattr(braintrust_resource, "id", "unknown")
+                ),
                 error=str(e),
             )
             return {}
@@ -450,16 +534,25 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
         """Extract user data from Okta user for Braintrust creation/update.
         
         Args:
-            okta_user: Okta user object
+            okta_user: Okta user object (may be dict or object)
             
         Returns:
             Dictionary with user data for Braintrust
         """
-        user_data = {
-            "given_name": okta_user.profile.firstName or "",
-            "family_name": okta_user.profile.lastName or "",
-            "email": okta_user.profile.email,
-        }
+        # Handle both dict and object formats
+        if isinstance(okta_user, dict):
+            profile = okta_user.get("profile", {})
+            user_data = {
+                "given_name": profile.get("firstName", ""),
+                "family_name": profile.get("lastName", ""),
+                "email": profile.get("email", ""),
+            }
+        else:
+            user_data = {
+                "given_name": okta_user.profile.get("firstName", ""),
+                "family_name": okta_user.profile.get("lastName", ""),
+                "email": okta_user.profile.get("email", ""),
+            }
         
         # Add custom fields if configured
         additional_fields = {}
@@ -468,7 +561,13 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                 if okta_field in ["firstName", "lastName", "email"]:
                     continue  # Already handled in main fields
                 
-                value = getattr(okta_user.profile, okta_field, None)
+                # Handle both dict and object formats
+                if isinstance(okta_user, dict):
+                    profile = okta_user.get("profile", {})
+                    value = profile.get(okta_field)
+                else:
+                    value = okta_user.profile.get(okta_field)
+                    
                 if value is not None:
                     additional_fields[braintrust_field] = value
         

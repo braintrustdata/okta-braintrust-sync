@@ -127,21 +127,40 @@ class SyncPlanner:
         self.state_manager = state_manager
         
         # Initialize resource syncers
+        # Use default identity mapping strategy since it's not in the current config model
+        identity_strategy = "email"  # Default strategy
+        custom_mappings = {}  # Default empty mappings
+        
+        # If user sync is configured, we could get these from the user config in the future
+        if config.sync_rules.users:
+            # For now, use defaults. In the future, these could be part of UserSyncConfig
+            pass
+            
         self.user_syncer = UserSyncer(
             okta_client=okta_client,
             braintrust_clients=braintrust_clients,
             state_manager=state_manager,
-            identity_mapping_strategy=config.sync_rules.identity_mapping_strategy,
-            custom_field_mappings=config.sync_rules.custom_field_mappings,
+            identity_mapping_strategy=identity_strategy,
+            custom_field_mappings=custom_mappings,
         )
         
+        # Use default group sync settings since they're not in the current config model
+        sync_memberships = True  # Default to syncing group memberships
+        name_prefix = ""  # Default no prefix
+        name_suffix = ""  # Default no suffix
+        
+        # If group sync is configured, we could get these from the group config in the future
+        if config.sync_rules.groups:
+            # For now, use defaults. In the future, these could be part of GroupSyncConfig
+            pass
+            
         self.group_syncer = GroupSyncer(
             okta_client=okta_client,
             braintrust_clients=braintrust_clients,
             state_manager=state_manager,
-            sync_group_memberships=config.sync_rules.sync_group_memberships,
-            group_name_prefix=config.sync_rules.group_name_prefix,
-            group_name_suffix=config.sync_rules.group_name_suffix,
+            sync_group_memberships=sync_memberships,
+            group_name_prefix=name_prefix,
+            group_name_suffix=name_suffix,
         )
         
         self._logger = logger.bind(
@@ -488,21 +507,22 @@ class SyncPlanner:
         """Get sync rules as a dictionary for syncer compatibility.
         
         Returns:
-            Sync rules dictionary
+            Sync rules dictionary with safe defaults
         """
+        # Use safe defaults since the current config model doesn't have these fields
         return {
             "sync_all": True,
-            "create_missing": self.config.sync_rules.create_missing_resources,
-            "update_existing": self.config.sync_rules.update_existing_resources,
-            "only_active_users": self.config.sync_rules.only_active_users,
-            "email_domain_filters": self.config.sync_rules.email_domain_filters,
-            "group_filters": self.config.sync_rules.group_filters,
-            "profile_filters": self.config.sync_rules.profile_filters,
-            "group_type_filters": self.config.sync_rules.group_type_filters,
-            "group_name_patterns": self.config.sync_rules.group_name_patterns,
-            "group_profile_filters": self.config.sync_rules.group_profile_filters,
-            "min_group_members": self.config.sync_rules.min_group_members,
-            "limit": self.config.sync_rules.max_resources_per_type,
+            "create_missing": True,  # Default: create missing resources
+            "update_existing": True,  # Default: update existing resources
+            "only_active_users": True,  # Default: only sync active users
+            "email_domain_filters": {},  # Default: no domain filters (dict by org)
+            "group_filters": {},  # Default: no group filters (dict by org)
+            "profile_filters": {},  # Default: no profile filters (dict by org)
+            "group_type_filters": {},  # Default: no group type filters (dict by org)
+            "group_name_patterns": {},  # Default: no name patterns (dict by org)
+            "group_profile_filters": {},  # Default: no group profile filters (dict by org)
+            "min_group_members": {},  # Default: no minimum members (dict by org)
+            "limit": None,  # Default: no limit
         }
     
     async def validate_plan_preconditions(

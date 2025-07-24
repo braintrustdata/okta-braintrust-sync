@@ -49,7 +49,7 @@ class BraintrustClient:
         # Initialize Braintrust client
         self.client = Braintrust(
             api_key=api_key.get_secret_value(),
-            base_url=api_url,
+            base_url=str(api_url),  # Convert HttpUrl to string
             timeout=timeout_seconds,
         )
         
@@ -59,13 +59,13 @@ class BraintrustClient:
         self._last_request_time: Optional[float] = None
         
         # Extract organization name from API URL for logging
-        parsed_url = urlparse(api_url)
+        parsed_url = urlparse(str(api_url))
         self.org_name = parsed_url.hostname or "unknown"
         
         # Logger with client context
         self._logger = logger.bind(
             client_type="BraintrustClient",
-            api_url=api_url,
+            api_url=str(api_url),
             org_name=self.org_name,
         )
     
@@ -109,10 +109,18 @@ class BraintrustClient:
         """
         try:
             self._request_count += 1
-            # Note: Actual API endpoint may vary - this is conceptual
-            org_info = self.client.organizations.retrieve()
-            self._logger.debug("Retrieved organization info", org_id=getattr(org_info, 'id', None))
-            return org_info.model_dump() if hasattr(org_info, 'model_dump') else dict(org_info)
+            # For health check, just try to list organizations to test connectivity
+            # This is safer than trying to retrieve a specific org
+            orgs = self.client.organizations.list()
+            org_list = list(orgs)
+            self._logger.debug("Retrieved organizations list", org_count=len(org_list))
+            
+            # Return info about the first org for health check purposes
+            if org_list:
+                first_org = org_list[0]
+                return first_org.model_dump() if hasattr(first_org, 'model_dump') else dict(first_org)
+            else:
+                return {"organizations": [], "message": "No organizations found"}
         except Exception as e:
             self._error_count += 1
             raise self._convert_to_braintrust_error(e) from e
@@ -163,7 +171,8 @@ class BraintrustClient:
                 limit=limit,
                 starting_after=starting_after,
             )
-            users = users_response.data if hasattr(users_response, 'data') else users_response
+            # Convert SyncListObjects to list to get actual data
+            users = list(users_response)
             self._logger.debug("Listed users", count=len(users))
             return users
         except Exception as e:
@@ -288,7 +297,8 @@ class BraintrustClient:
                 limit=limit,
                 starting_after=starting_after,
             )
-            groups = groups_response.data if hasattr(groups_response, 'data') else groups_response
+            # Convert SyncListObjects to list to get actual data
+            groups = list(groups_response)
             self._logger.debug("Listed groups", count=len(groups))
             return groups
         except Exception as e:
@@ -522,7 +532,12 @@ class BraintrustClient:
         try:
             users = await self.list_users()
             for user in users:
-                if getattr(user, 'email', None) == email:
+                # Handle both dict and object formats
+                user_email = (
+                    user.get('email') if isinstance(user, dict)
+                    else getattr(user, 'email', None)
+                )
+                if user_email == email:
                     return user
             return None
         except Exception as e:
@@ -541,7 +556,12 @@ class BraintrustClient:
         try:
             groups = await self.list_groups()
             for group in groups:
-                if getattr(group, 'name', None) == name:
+                # Handle both dict and object formats
+                group_name = (
+                    group.get('name') if isinstance(group, dict)
+                    else getattr(group, 'name', None)
+                )
+                if group_name == name:
                     return group
             return None
         except Exception as e:

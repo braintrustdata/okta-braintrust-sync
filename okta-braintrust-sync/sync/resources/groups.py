@@ -298,12 +298,34 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
         """Get unique identifier for an Okta group.
         
         Args:
-            resource: Okta group
+            resource: Okta group (may be dict or object)
             
         Returns:
             Unique identifier (group name)
         """
-        return resource.profile.name
+        # Handle both dict and object formats
+        if isinstance(resource, dict):
+            profile = resource.get("profile", {})
+            return profile.get("name", "")
+        else:
+            # For OktaGroup objects, profile is a dictionary
+            return resource.profile.get("name", "")
+    
+    def get_braintrust_resource_identifier(self, resource: BraintrustGroup) -> str:
+        """Get unique identifier for a Braintrust group.
+        
+        Args:
+            resource: Braintrust group (may be dict or object)
+            
+        Returns:
+            Unique identifier (group name)
+        """
+        # Handle both dict and object formats
+        if isinstance(resource, dict):
+            return resource.get('name', '') or resource.get('id', '')
+        else:
+            # Braintrust groups have name as a direct attribute, not under profile
+            return getattr(resource, 'name', '') or getattr(resource, 'id', '')
     
     def should_sync_resource(
         self,
@@ -314,7 +336,7 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
         """Check if group should be synced to the given organization.
         
         Args:
-            okta_resource: Okta group to check
+            okta_resource: Okta group to check (may be dict or object)
             braintrust_org: Target Braintrust organization
             sync_rules: Sync rules configuration
             
@@ -322,6 +344,23 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
             True if group should be synced
         """
         try:
+            # Helper to safely get group name
+            def get_group_name():
+                if isinstance(okta_resource, dict):
+                    profile = okta_resource.get("profile", {})
+                    return profile.get("name", "")
+                else:
+                    return okta_resource.profile.get("name", "")
+            
+            # Helper to safely get group ID
+            def get_group_id():
+                if isinstance(okta_resource, dict):
+                    return okta_resource.get("id", "")
+                else:
+                    return okta_resource.id
+            
+            group_name = get_group_name()
+            group_id = get_group_id()
             # Check group type filters
             group_type_filters = sync_rules.get("group_type_filters", {}).get(braintrust_org)
             if group_type_filters:
@@ -331,8 +370,8 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
                 if include_types and group_type not in include_types:
                     self._logger.debug(
                         "Group type not in include list",
-                        group_id=okta_resource.id,
-                        group_name=okta_resource.profile.name,
+                        group_id=group_id,
+                        group_name=group_name,
                         group_type=group_type,
                         include_types=include_types,
                         braintrust_org=braintrust_org,
@@ -343,8 +382,8 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
                 if exclude_types and group_type in exclude_types:
                     self._logger.debug(
                         "Group type in exclude list",
-                        group_id=okta_resource.id,
-                        group_name=okta_resource.profile.name,
+                        group_id=group_id,
+                        group_name=group_name,
                         group_type=group_type,
                         exclude_types=exclude_types,
                         braintrust_org=braintrust_org,
@@ -354,7 +393,6 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
             # Check group name patterns
             name_patterns = sync_rules.get("group_name_patterns", {}).get(braintrust_org)
             if name_patterns:
-                group_name = okta_resource.profile.name
                 
                 # Include patterns - if specified, group name must match at least one
                 include_patterns = name_patterns.get("include", [])
@@ -363,7 +401,7 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
                     if not any(re.search(pattern, group_name) for pattern in include_patterns):
                         self._logger.debug(
                             "Group name doesn't match include patterns",
-                            group_id=okta_resource.id,
+                            group_id=group_id,
                             group_name=group_name,
                             include_patterns=include_patterns,
                             braintrust_org=braintrust_org,
@@ -377,7 +415,7 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
                     if any(re.search(pattern, group_name) for pattern in exclude_patterns):
                         self._logger.debug(
                             "Group name matches exclude pattern",
-                            group_id=okta_resource.id,
+                            group_id=group_id,
                             group_name=group_name,
                             exclude_patterns=exclude_patterns,
                             braintrust_org=braintrust_org,
@@ -404,12 +442,18 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
             profile_filters = sync_rules.get("group_profile_filters", {}).get(braintrust_org)
             if profile_filters:
                 for attr_name, expected_values in profile_filters.items():
-                    group_value = getattr(okta_resource.profile, attr_name, None)
+                    # Handle both dict and object formats for profile attribute access
+                    if isinstance(okta_resource, dict):
+                        profile = okta_resource.get("profile", {})
+                        group_value = profile.get(attr_name)
+                    else:
+                        group_value = okta_resource.profile.get(attr_name)
+                        
                     if group_value not in expected_values:
                         self._logger.debug(
                             "Group profile attribute doesn't match filter",
-                            group_id=okta_resource.id,
-                            group_name=okta_resource.profile.name,
+                            group_id=group_id,
+                            group_name=group_name,
                             attribute=attr_name,
                             group_value=group_value,
                             expected_values=expected_values,
@@ -420,10 +464,19 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
             return True
             
         except Exception as e:
+            # Safe access for error logging
+            group_id = (
+                okta_resource.get("id") if isinstance(okta_resource, dict)
+                else okta_resource.id
+            )
+            group_name = (
+                okta_resource.get("profile", {}).get("name", "") if isinstance(okta_resource, dict)
+                else okta_resource.profile.get("name", "")
+            )
             self._logger.warning(
                 "Error checking group sync rules, defaulting to sync",
-                group_id=okta_resource.id,
-                group_name=okta_resource.profile.name,
+                group_id=group_id,
+                group_name=group_name,
                 braintrust_org=braintrust_org,
                 error=str(e),
             )
@@ -474,10 +527,20 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
                 if current_groups != target_groups:
                     updates["member_groups"] = list(target_groups)
             
+            # Safe access for logging
+            okta_group_id = (
+                okta_resource.get("id") if isinstance(okta_resource, dict)
+                else okta_resource.id
+            )
+            braintrust_group_id = (
+                braintrust_resource.get("id", "unknown") if isinstance(braintrust_resource, dict)
+                else getattr(braintrust_resource, "id", "unknown")
+            )
+            
             self._logger.debug(
                 "Calculated group updates",
-                okta_group_id=okta_resource.id,
-                braintrust_group_id=getattr(braintrust_resource, "id", "unknown"),
+                okta_group_id=okta_group_id,
+                braintrust_group_id=braintrust_group_id,
                 updates=list(updates.keys()),
             )
             
@@ -496,17 +559,26 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
         """Extract group data from Okta group for Braintrust creation/update.
         
         Args:
-            okta_group: Okta group object
+            okta_group: Okta group object (may be dict or object)
             
         Returns:
             Dictionary with group data for Braintrust
         """
+        # Handle both dict and object formats
+        if isinstance(okta_group, dict):
+            profile = okta_group.get("profile", {})
+            group_name = profile.get("name", "")
+            description = profile.get("description", "")
+        else:
+            group_name = okta_group.profile.get("name", "")
+            description = okta_group.profile.get("description", "")
+        
         # Generate Braintrust group name with prefix/suffix
-        braintrust_name = f"{self.group_name_prefix}{okta_group.profile.name}{self.group_name_suffix}"
+        braintrust_name = f"{self.group_name_prefix}{group_name}{self.group_name_suffix}"
         
         group_data = {
             "name": braintrust_name,
-            "description": getattr(okta_group.profile, "description", "") or f"Synced from Okta group: {okta_group.profile.name}",
+            "description": description or f"Synced from Okta group: {group_name}",
         }
         
         # Add member information if available and membership sync is enabled
@@ -519,6 +591,8 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
                 for member in members:
                     if hasattr(member, "profile") and hasattr(member.profile, "email"):
                         member_users.append(member.profile.email)
+                    elif isinstance(member, dict) and "email" in member:
+                        member_users.append(member["email"])
                     elif hasattr(member, "email"):
                         member_users.append(member.email)
                 
