@@ -1,13 +1,24 @@
 """Command-line interface for okta-braintrust-sync."""
 
+import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
+from rich.panel import Panel
+from rich.text import Text
+from pydantic import SecretStr
 
 from sync.config.loader import ConfigLoader, find_config_file
+from sync.config.models import SyncConfig
+from sync.clients.okta import OktaClient
+from sync.clients.braintrust import BraintrustClient
+from sync.core.state import StateManager
+from sync.core.planner import SyncPlanner
+from sync.core.executor import SyncExecutor, ExecutionProgress
 from sync.version import __version__
 
 # Create the main Typer app
@@ -85,8 +96,41 @@ def validate(
         console.print(f"[red]✗[/red] Configuration validation failed: {e}")
         raise typer.Exit(1)
     
-    # TODO: Add API connectivity tests
-    console.print("[yellow]API connectivity validation not yet implemented[/yellow]")
+    # Test API connectivity
+    try:
+        async def test_connectivity():
+            # Initialize clients
+            okta_client, braintrust_clients = await _initialize_clients(sync_config)
+            
+            # Test Okta connectivity
+            console.print("Testing Okta API connectivity...")
+            okta_healthy = await okta_client.health_check()
+            if okta_healthy:
+                console.print("[green]✓[/green] Okta API connection successful")
+            else:
+                console.print("[red]✗[/red] Okta API connection failed")
+                return False
+            
+            # Test Braintrust connectivity for each org
+            for org_name, client in braintrust_clients.items():
+                console.print(f"Testing Braintrust API connectivity for {org_name}...")
+                bt_healthy = await client.health_check()
+                if bt_healthy:
+                    console.print(f"[green]✓[/green] Braintrust API connection successful for {org_name}")
+                else:
+                    console.print(f"[red]✗[/red] Braintrust API connection failed for {org_name}")
+                    return False
+            
+            return True
+        
+        connectivity_ok = asyncio.run(test_connectivity())
+        if not connectivity_ok:
+            console.print("[red]API connectivity tests failed[/red]")
+            raise typer.Exit(1)
+            
+    except Exception as e:
+        console.print(f"[red]✗[/red] API connectivity test failed: {e}")
+        raise typer.Exit(1)
     
     console.print("[green]Validation completed successfully![/green]")
 
@@ -102,19 +146,96 @@ def plan(
         file_okay=True,
         dir_okay=False,
     ),
-    dry_run: bool = typer.Option(
-        True,
-        "--dry-run/--no-dry-run",
-        help="Show what would be synced without making changes",
+    organizations: Optional[List[str]] = typer.Option(
+        None,
+        "--org",
+        help="Target Braintrust organizations (default: all configured)",
+    ),
+    resource_types: Optional[List[str]] = typer.Option(
+        None,
+        "--resource",
+        help="Resource types to sync (user, group)",
+    ),
+    user_filter: Optional[str] = typer.Option(
+        None,
+        "--user-filter",
+        help="Okta SCIM filter for users",
+    ),
+    group_filter: Optional[str] = typer.Option(
+        None,
+        "--group-filter", 
+        help="Okta SCIM filter for groups",
     ),
 ) -> None:
     """Generate and display sync plan (Terraform-like)."""
-    console.print("[yellow]Sync planning not yet implemented[/yellow]")
-    console.print("This will show:")
-    console.print("  • Users to be created/updated in each Braintrust org")
-    console.print("  • Groups to be created/updated in each Braintrust org")
-    console.print("  • Group memberships to be synchronized")
-    console.print("  • Resources that would be skipped and why")
+    # Auto-discover config if not provided
+    if config is None:
+        config = find_config_file()
+        if config:
+            console.print(f"Using config file: [cyan]{config}[/cyan]")
+    
+    # Load configuration
+    loader = ConfigLoader()
+    try:
+        sync_config = loader.load_config(config)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to load configuration: {e}")
+        raise typer.Exit(1)
+    
+    async def generate_plan():
+        try:
+            # Initialize clients and planner
+            okta_client, braintrust_clients = await _initialize_clients(sync_config)
+            state_manager = StateManager()
+            
+            # Create sync state if none exists
+            current_state = state_manager.get_current_state()
+            if not current_state:
+                current_state = state_manager.create_sync_state("plan_session")
+            
+            planner = SyncPlanner(
+                config=sync_config,
+                okta_client=okta_client,
+                braintrust_clients=braintrust_clients,
+                state_manager=state_manager,
+            )
+            
+            # Set defaults
+            target_orgs = organizations or list(braintrust_clients.keys())
+            target_resources = resource_types or ["user", "group"]
+            okta_filters = {}
+            if user_filter:
+                okta_filters["user"] = user_filter
+            if group_filter:
+                okta_filters["group"] = group_filter
+            
+            console.print("Generating sync plan...")
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("Planning synchronization...", total=None)
+                
+                plan = await planner.generate_sync_plan(
+                    target_organizations=target_orgs,
+                    resource_types=target_resources,
+                    okta_filters=okta_filters,
+                    dry_run=True,
+                )
+            
+            # Display plan
+            _display_sync_plan(plan)
+            
+            return plan
+            
+        except Exception as e:
+            console.print(f"[red]✗[/red] Failed to generate sync plan: {e}")
+            raise typer.Exit(1)
+    
+    asyncio.run(generate_plan())
 
 
 @app.command()
@@ -133,14 +254,130 @@ def apply(
         "--dry-run",
         help="Show what would be synced without making changes",
     ),
+    organizations: Optional[List[str]] = typer.Option(
+        None,
+        "--org",
+        help="Target Braintrust organizations (default: all configured)",
+    ),
+    resource_types: Optional[List[str]] = typer.Option(
+        None,
+        "--resource",
+        help="Resource types to sync (user, group)",
+    ),
+    auto_approve: bool = typer.Option(
+        False,
+        "--auto-approve",
+        help="Skip interactive confirmation",
+    ),
+    max_concurrent: int = typer.Option(
+        5,
+        "--max-concurrent",
+        help="Maximum concurrent operations",
+    ),
+    continue_on_error: bool = typer.Option(
+        True,
+        "--continue-on-error/--stop-on-error",
+        help="Continue execution after individual item failures",
+    ),
 ) -> None:
     """Apply sync plan to synchronize resources."""
-    console.print("[yellow]Sync execution not yet implemented[/yellow]")
-    console.print("This will execute the sync plan and:")
-    console.print("  • Create/update users in Braintrust organizations") 
-    console.print("  • Create/update groups in Braintrust organizations")
-    console.print("  • Synchronize group memberships")
-    console.print("  • Generate detailed audit logs")
+    # Auto-discover config if not provided
+    if config is None:
+        config = find_config_file()
+        if config:
+            console.print(f"Using config file: [cyan]{config}[/cyan]")
+    
+    # Load configuration
+    loader = ConfigLoader()
+    try:
+        sync_config = loader.load_config(config)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to load configuration: {e}")
+        raise typer.Exit(1)
+    
+    async def execute_sync():
+        try:
+            # Initialize clients and components
+            okta_client, braintrust_clients = await _initialize_clients(sync_config)
+            state_manager = StateManager()
+            
+            # Create sync state
+            current_state = state_manager.get_current_state()
+            if not current_state:
+                current_state = state_manager.create_sync_state("apply_session")
+            
+            planner = SyncPlanner(
+                config=sync_config,
+                okta_client=okta_client,
+                braintrust_clients=braintrust_clients,
+                state_manager=state_manager,
+            )
+            
+            # Generate plan first
+            target_orgs = organizations or list(braintrust_clients.keys())
+            target_resources = resource_types or ["user", "group"]
+            
+            console.print("Generating sync plan...")
+            plan = await planner.generate_sync_plan(
+                target_organizations=target_orgs,
+                resource_types=target_resources,
+                dry_run=dry_run,
+            )
+            
+            # Display plan
+            _display_sync_plan(plan)
+            
+            # Confirm execution unless auto-approved or dry run
+            if not dry_run and not auto_approve:
+                if not typer.confirm("\nDo you want to apply these changes?"):
+                    console.print("Operation cancelled.")
+                    return
+            
+            # Execute plan
+            progress_data = {"current_progress": None}
+            
+            def progress_callback(progress: ExecutionProgress):
+                progress_data["current_progress"] = progress
+            
+            executor = SyncExecutor(
+                okta_client=okta_client,
+                braintrust_clients=braintrust_clients,
+                state_manager=state_manager,
+                progress_callback=progress_callback,
+            )
+            
+            console.print(f"\n{'[yellow]DRY RUN:[/yellow] ' if dry_run else ''}Executing sync plan...")
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeRemainingColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Synchronizing resources...", total=plan.total_items)
+                
+                # Execute plan with progress updates
+                final_progress = await executor.execute_sync_plan(
+                    plan=plan,
+                    dry_run=dry_run,
+                    continue_on_error=continue_on_error,
+                    max_concurrent_operations=max_concurrent,
+                )
+                
+                progress.update(task, completed=final_progress.completed_items + final_progress.failed_items)
+            
+            # Display results
+            _display_execution_results(final_progress, dry_run)
+            
+            return final_progress
+            
+        except Exception as e:
+            console.print(f"[red]✗[/red] Sync execution failed: {e}")
+            raise typer.Exit(1)
+    
+    asyncio.run(execute_sync())
 
 
 @app.command()
@@ -301,6 +538,271 @@ def reconcile(
     """Force a reconciliation sync to fix any drift."""
     console.print("[yellow]Reconciliation not yet implemented[/yellow]")
     console.print("This will compare Okta state with Braintrust state and fix discrepancies")
+
+
+# Helper functions
+
+async def _initialize_clients(config: SyncConfig):
+    """Initialize Okta and Braintrust clients from configuration.
+    
+    Args:
+        config: Sync configuration
+        
+    Returns:
+        Tuple of (okta_client, braintrust_clients_dict)
+    """
+    # Initialize Okta client
+    okta_client = OktaClient(
+        domain=config.okta.domain,
+        api_token=config.okta.api_token,
+        timeout_seconds=config.okta.timeout_seconds,
+        rate_limit_per_minute=config.okta.rate_limit_per_minute,
+    )
+    
+    # Initialize Braintrust clients
+    braintrust_clients = {}
+    for org_name, org_config in config.braintrust_orgs.items():
+        braintrust_clients[org_name] = BraintrustClient(
+            api_key=org_config.api_key,
+            api_url=org_config.url,
+            timeout_seconds=org_config.timeout_seconds,
+            rate_limit_per_minute=org_config.rate_limit_per_minute,
+        )
+    
+    return okta_client, braintrust_clients
+
+
+def _display_sync_plan(plan):
+    """Display sync plan in a formatted table.
+    
+    Args:
+        plan: SyncPlan object to display
+    """
+    summary = plan.get_summary()
+    
+    # Display plan header
+    console.print(f"\n[bold]Sync Plan: {plan.plan_id}[/bold]")
+    console.print(f"Target Organizations: [cyan]{', '.join(plan.target_organizations)}[/cyan]")
+    
+    if summary["estimated_duration_minutes"]:
+        console.print(f"Estimated Duration: [yellow]{summary['estimated_duration_minutes']:.1f} minutes[/yellow]")
+    
+    # Display summary statistics
+    summary_table = Table(title="Plan Summary")
+    summary_table.add_column("Resource Type", style="cyan")
+    summary_table.add_column("Total Items", justify="right", style="green")
+    
+    summary_table.add_row("Users", str(summary["user_items"]))
+    summary_table.add_row("Groups", str(summary["group_items"]))
+    summary_table.add_row("[bold]Total[/bold]", f"[bold]{summary['total_items']}[/bold]")
+    
+    console.print(summary_table)
+    
+    # Display actions breakdown
+    if summary["actions"]:
+        actions_table = Table(title="Actions Breakdown")
+        actions_table.add_column("Action", style="cyan")
+        actions_table.add_column("Count", justify="right", style="green")
+        actions_table.add_column("Description", style="dim")
+        
+        action_descriptions = {
+            "create": "New resources to be created",
+            "update": "Existing resources to be updated", 
+            "skip": "Resources that are already up to date",
+        }
+        
+        for action, count in summary["actions"].items():
+            description = action_descriptions.get(action.lower(), "")
+            actions_table.add_row(action.upper(), str(count), description)
+        
+        console.print(actions_table)
+    
+    # Display organization breakdown
+    if summary["organizations"]:
+        org_table = Table(title="Organizations Breakdown")
+        org_table.add_column("Organization", style="cyan")
+        org_table.add_column("Items", justify="right", style="green")
+        
+        for org, count in summary["organizations"].items():
+            org_table.add_row(org, str(count))
+        
+        console.print(org_table)
+    
+    # Display warnings if any
+    if summary["warnings"]:
+        console.print("\n[yellow]⚠ Warnings:[/yellow]")
+        for warning in summary["warnings"]:
+            console.print(f"  • {warning}")
+    
+    # Display detailed plan items if not too many
+    if plan.total_items <= 20:
+        _display_detailed_plan_items(plan)
+
+
+def _display_detailed_plan_items(plan):
+    """Display detailed plan items in tables.
+    
+    Args:
+        plan: SyncPlan object with items to display
+    """
+    # Display user items
+    if plan.user_items:
+        user_table = Table(title="User Sync Items")
+        user_table.add_column("Action", style="cyan")
+        user_table.add_column("Okta User", style="green")
+        user_table.add_column("Organization", style="blue")
+        user_table.add_column("Reason", style="dim")
+        
+        for item in plan.user_items[:10]:  # Limit to first 10
+            action_color = {
+                "CREATE": "green",
+                "UPDATE": "yellow", 
+                "SKIP": "dim",
+            }.get(str(item.action).upper(), "white")
+            
+            user_table.add_row(
+                f"[{action_color}]{item.action}[/{action_color}]",
+                item.okta_resource_id,
+                item.braintrust_org,
+                item.reason,
+            )
+        
+        if len(plan.user_items) > 10:
+            user_table.add_row(
+                "[dim]...[/dim]",
+                f"[dim]and {len(plan.user_items) - 10} more[/dim]",
+                "",
+                "",
+            )
+        
+        console.print(user_table)
+    
+    # Display group items
+    if plan.group_items:
+        group_table = Table(title="Group Sync Items")
+        group_table.add_column("Action", style="cyan") 
+        group_table.add_column("Okta Group", style="green")
+        group_table.add_column("Organization", style="blue")
+        group_table.add_column("Reason", style="dim")
+        
+        for item in plan.group_items[:10]:  # Limit to first 10
+            action_color = {
+                "CREATE": "green",
+                "UPDATE": "yellow",
+                "SKIP": "dim", 
+            }.get(str(item.action).upper(), "white")
+            
+            group_table.add_row(
+                f"[{action_color}]{item.action}[/{action_color}]",
+                item.okta_resource_id,
+                item.braintrust_org,
+                item.reason,
+            )
+        
+        if len(plan.group_items) > 10:
+            group_table.add_row(
+                "[dim]...[/dim]",
+                f"[dim]and {len(plan.group_items) - 10} more[/dim]",
+                "",
+                "",
+            )
+        
+        console.print(group_table)
+
+
+def _display_execution_results(progress: ExecutionProgress, dry_run: bool):
+    """Display execution results and statistics.
+    
+    Args:
+        progress: ExecutionProgress object with results
+        dry_run: Whether this was a dry run
+    """
+    # Display execution summary
+    console.print(f"\n[bold]{'Dry Run ' if dry_run else ''}Execution Results: {progress.execution_id}[/bold]")
+    
+    duration = (
+        progress.completed_at - progress.started_at
+    ).total_seconds() if progress.completed_at else 0
+    
+    console.print(f"Duration: [cyan]{duration:.1f} seconds[/cyan]")
+    console.print(f"Completion: [green]{progress.get_completion_percentage():.1f}%[/green]")
+    
+    # Results summary table
+    results_table = Table(title="Results Summary")
+    results_table.add_column("Status", style="cyan")
+    results_table.add_column("Count", justify="right", style="green")
+    results_table.add_column("Percentage", justify="right", style="dim")
+    
+    total = progress.total_items or 1
+    results_table.add_row(
+        "[green]Completed[/green]",
+        str(progress.completed_items),
+        f"{(progress.completed_items / total) * 100:.1f}%",
+    )
+    results_table.add_row(
+        "[red]Failed[/red]",
+        str(progress.failed_items),
+        f"{(progress.failed_items / total) * 100:.1f}%",
+    )
+    results_table.add_row(
+        "[dim]Skipped[/dim]", 
+        str(progress.skipped_items),
+        f"{(progress.skipped_items / total) * 100:.1f}%",
+    )
+    results_table.add_row(
+        "[bold]Total[/bold]",
+        f"[bold]{progress.total_items}[/bold]",
+        "[bold]100.0%[/bold]",
+    )
+    
+    console.print(results_table)
+    
+    # Organization breakdown
+    if progress.org_progress:
+        org_table = Table(title="Results by Organization")
+        org_table.add_column("Organization", style="cyan")
+        org_table.add_column("Completed", justify="right", style="green")
+        org_table.add_column("Failed", justify="right", style="red")
+        org_table.add_column("Skipped", justify="right", style="dim")
+        
+        for org_name, org_stats in progress.org_progress.items():
+            org_table.add_row(
+                org_name,
+                str(org_stats.get("completed", 0)),
+                str(org_stats.get("failed", 0)),
+                str(org_stats.get("skipped", 0)),
+            )
+        
+        console.print(org_table)
+    
+    # Display errors if any
+    if progress.errors:
+        console.print(f"\n[red]✗ Errors ({len(progress.errors)}):[/red]")
+        for i, error in enumerate(progress.errors[:5], 1):  # Show first 5 errors
+            console.print(f"  {i}. {error}")
+        
+        if len(progress.errors) > 5:
+            console.print(f"  ... and {len(progress.errors) - 5} more errors")
+    
+    # Display warnings if any
+    if progress.warnings:
+        console.print(f"\n[yellow]⚠ Warnings ({len(progress.warnings)}):[/yellow]")
+        for i, warning in enumerate(progress.warnings[:3], 1):  # Show first 3 warnings
+            console.print(f"  {i}. {warning}")
+        
+        if len(progress.warnings) > 3:
+            console.print(f"  ... and {len(progress.warnings) - 3} more warnings")
+    
+    # Final status message
+    if progress.current_phase == "completed":
+        if progress.failed_items == 0:
+            status_msg = f"[green]✓ {'Dry run c' if dry_run else 'C'}ompleted successfully![/green]"
+        else:
+            status_msg = f"[yellow]⚠ {'Dry run c' if dry_run else 'C'}ompleted with {progress.failed_items} failures[/yellow]"
+    else:
+        status_msg = f"[red]✗ {'Dry run' if dry_run else 'Execution'} failed or was interrupted[/red]"
+    
+    console.print(f"\n{status_msg}")
 
 
 if __name__ == "__main__":

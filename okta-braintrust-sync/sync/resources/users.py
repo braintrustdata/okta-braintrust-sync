@@ -1,0 +1,507 @@
+"""User synchronization between Okta and Braintrust organizations."""
+
+from typing import Any, Dict, List, Optional
+
+import structlog
+from braintrust_api.types import User as BraintrustUser
+
+from sync.clients.braintrust import BraintrustClient
+from sync.clients.okta import OktaClient, OktaUser
+from sync.core.state import StateManager
+from sync.resources.base import BaseResourceSyncer
+
+logger = structlog.get_logger(__name__)
+
+
+class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
+    """Syncs users from Okta to Braintrust organizations."""
+    
+    def __init__(
+        self,
+        okta_client: OktaClient,
+        braintrust_clients: Dict[str, BraintrustClient],
+        state_manager: StateManager,
+        identity_mapping_strategy: str = "email",
+        custom_field_mappings: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """Initialize user syncer.
+        
+        Args:
+            okta_client: Okta API client
+            braintrust_clients: Dictionary of Braintrust clients by org name
+            state_manager: State manager for tracking sync operations
+            identity_mapping_strategy: How to map user identities ("email", "custom_field", "mapping_file")
+            custom_field_mappings: Custom field mappings for user attributes
+        """
+        super().__init__(okta_client, braintrust_clients, state_manager)
+        
+        self.identity_mapping_strategy = identity_mapping_strategy
+        self.custom_field_mappings = custom_field_mappings or {}
+        
+        self._logger = logger.bind(
+            syncer_type="UserSyncer",
+            identity_strategy=identity_mapping_strategy,
+        )
+    
+    @property
+    def resource_type(self) -> str:
+        return "user"
+    
+    async def get_okta_resources(
+        self,
+        filter_expr: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[OktaUser]:
+        """Get users from Okta.
+        
+        Args:
+            filter_expr: Optional SCIM filter expression
+            limit: Maximum number of users to retrieve
+            
+        Returns:
+            List of Okta users
+        """
+        try:
+            self._logger.debug(
+                "Retrieving Okta users",
+                filter_expr=filter_expr,
+                limit=limit,
+            )
+            
+            if filter_expr:
+                users = await self.okta_client.search_users(filter_expr, limit=limit)
+            else:
+                users = await self.okta_client.list_users(limit=limit)
+            
+            self._logger.info(
+                "Retrieved Okta users",
+                count=len(users),
+                filter_applied=filter_expr is not None,
+            )
+            
+            return users
+            
+        except Exception as e:
+            self._logger.error("Failed to retrieve Okta users", error=str(e))
+            raise
+    
+    async def get_braintrust_resources(
+        self,
+        braintrust_org: str,
+        limit: Optional[int] = None,
+    ) -> List[BraintrustUser]:
+        """Get users from Braintrust organization.
+        
+        Args:
+            braintrust_org: Braintrust organization name
+            limit: Maximum number of users to retrieve
+            
+        Returns:
+            List of Braintrust users
+        """
+        if braintrust_org not in self.braintrust_clients:
+            raise ValueError(f"No Braintrust client configured for org: {braintrust_org}")
+        
+        try:
+            client = self.braintrust_clients[braintrust_org]
+            
+            self._logger.debug(
+                "Retrieving Braintrust users",
+                braintrust_org=braintrust_org,
+                limit=limit,
+            )
+            
+            users = await client.list_users(limit=limit)
+            
+            self._logger.info(
+                "Retrieved Braintrust users",
+                braintrust_org=braintrust_org,
+                count=len(users),
+            )
+            
+            return users
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to retrieve Braintrust users",
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            raise
+    
+    async def create_braintrust_resource(
+        self,
+        okta_resource: OktaUser,
+        braintrust_org: str,
+        additional_data: Optional[Dict[str, Any]] = None,
+    ) -> BraintrustUser:
+        """Create a new user in Braintrust.
+        
+        Args:
+            okta_resource: Source Okta user
+            braintrust_org: Target Braintrust organization
+            additional_data: Additional data for user creation
+            
+        Returns:
+            Created Braintrust user
+        """
+        if braintrust_org not in self.braintrust_clients:
+            raise ValueError(f"No Braintrust client configured for org: {braintrust_org}")
+        
+        try:
+            client = self.braintrust_clients[braintrust_org]
+            
+            # Extract user information from Okta user
+            user_data = self._extract_user_data(okta_resource)
+            
+            # Apply additional data if provided
+            if additional_data:
+                user_data.update(additional_data)
+            
+            self._logger.debug(
+                "Creating Braintrust user",
+                okta_user_id=okta_resource.id,
+                email=user_data.get("email"),
+                braintrust_org=braintrust_org,
+            )
+            
+            braintrust_user = await client.create_user(
+                given_name=user_data["given_name"],
+                family_name=user_data["family_name"],
+                email=user_data["email"],
+                additional_fields=user_data.get("additional_fields"),
+            )
+            
+            self._logger.info(
+                "Created Braintrust user",
+                okta_user_id=okta_resource.id,
+                braintrust_user_id=braintrust_user.id,
+                email=user_data["email"],
+                braintrust_org=braintrust_org,
+            )
+            
+            return braintrust_user
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to create Braintrust user",
+                okta_user_id=okta_resource.id,
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            raise
+    
+    async def update_braintrust_resource(
+        self,
+        braintrust_resource_id: str,
+        okta_resource: OktaUser,
+        braintrust_org: str,
+        updates: Dict[str, Any],
+    ) -> BraintrustUser:
+        """Update an existing user in Braintrust.
+        
+        Args:
+            braintrust_resource_id: Braintrust user ID
+            okta_resource: Source Okta user
+            braintrust_org: Target Braintrust organization
+            updates: Fields to update
+            
+        Returns:
+            Updated Braintrust user
+        """
+        if braintrust_org not in self.braintrust_clients:
+            raise ValueError(f"No Braintrust client configured for org: {braintrust_org}")
+        
+        try:
+            client = self.braintrust_clients[braintrust_org]
+            
+            self._logger.debug(
+                "Updating Braintrust user",
+                braintrust_user_id=braintrust_resource_id,
+                okta_user_id=okta_resource.id,
+                updates=list(updates.keys()),
+                braintrust_org=braintrust_org,
+            )
+            
+            braintrust_user = await client.update_user(braintrust_resource_id, updates)
+            
+            self._logger.info(
+                "Updated Braintrust user",
+                braintrust_user_id=braintrust_resource_id,
+                okta_user_id=okta_resource.id,
+                updated_fields=list(updates.keys()),
+                braintrust_org=braintrust_org,
+            )
+            
+            return braintrust_user
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to update Braintrust user",
+                braintrust_user_id=braintrust_resource_id,
+                okta_user_id=okta_resource.id,
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            raise
+    
+    def get_resource_identifier(self, resource: OktaUser) -> str:
+        """Get unique identifier for an Okta user.
+        
+        Args:
+            resource: Okta user
+            
+        Returns:
+            Unique identifier (usually email)
+        """
+        if self.identity_mapping_strategy == "email":
+            return resource.profile.email
+        elif self.identity_mapping_strategy == "custom_field":
+            # Use a custom field from the user profile
+            custom_field = self.custom_field_mappings.get("identity_field", "email")
+            return getattr(resource.profile, custom_field, resource.profile.email)
+        elif self.identity_mapping_strategy == "mapping_file":
+            # For mapping file strategy, use email as fallback
+            # In practice, this would load from an external mapping file
+            return resource.profile.email
+        else:
+            # Default to email
+            return resource.profile.email
+    
+    def should_sync_resource(
+        self,
+        okta_resource: OktaUser,
+        braintrust_org: str,
+        sync_rules: Dict[str, Any],
+    ) -> bool:
+        """Check if user should be synced to the given organization.
+        
+        Args:
+            okta_resource: Okta user to check
+            braintrust_org: Target Braintrust organization
+            sync_rules: Sync rules configuration
+            
+        Returns:
+            True if user should be synced
+        """
+        try:
+            # Check if user is active
+            if sync_rules.get("only_active_users", True):
+                if okta_resource.status != "ACTIVE":
+                    self._logger.debug(
+                        "Skipping inactive user",
+                        user_id=okta_resource.id,
+                        status=okta_resource.status,
+                        braintrust_org=braintrust_org,
+                    )
+                    return False
+            
+            # Check email domain filters
+            email_domain_filters = sync_rules.get("email_domain_filters", {}).get(braintrust_org)
+            if email_domain_filters:
+                user_domain = okta_resource.profile.email.split("@")[1].lower()
+                
+                # Include filters - if specified, user domain must be in the list
+                include_domains = email_domain_filters.get("include", [])
+                if include_domains and user_domain not in [d.lower() for d in include_domains]:
+                    self._logger.debug(
+                        "User domain not in include list",
+                        user_email=okta_resource.profile.email,
+                        user_domain=user_domain,
+                        include_domains=include_domains,
+                        braintrust_org=braintrust_org,
+                    )
+                    return False
+                
+                # Exclude filters - if user domain is in exclude list, skip
+                exclude_domains = email_domain_filters.get("exclude", [])
+                if exclude_domains and user_domain in [d.lower() for d in exclude_domains]:
+                    self._logger.debug(
+                        "User domain in exclude list",
+                        user_email=okta_resource.profile.email,
+                        user_domain=user_domain,
+                        exclude_domains=exclude_domains,
+                        braintrust_org=braintrust_org,
+                    )
+                    return False
+            
+            # Check group membership filters
+            group_filters = sync_rules.get("group_filters", {}).get(braintrust_org)
+            if group_filters:
+                user_groups = getattr(okta_resource, "groups", [])
+                user_group_names = [g.profile.name for g in user_groups if hasattr(g, "profile")]
+                
+                # Include groups - if specified, user must be in at least one
+                include_groups = group_filters.get("include", [])
+                if include_groups:
+                    if not any(group in user_group_names for group in include_groups):
+                        self._logger.debug(
+                            "User not in required groups",
+                            user_id=okta_resource.id,
+                            user_groups=user_group_names,
+                            required_groups=include_groups,
+                            braintrust_org=braintrust_org,
+                        )
+                        return False
+                
+                # Exclude groups - if user is in any exclude group, skip
+                exclude_groups = group_filters.get("exclude", [])
+                if exclude_groups:
+                    if any(group in user_group_names for group in exclude_groups):
+                        self._logger.debug(
+                            "User in excluded groups",
+                            user_id=okta_resource.id,
+                            user_groups=user_group_names,
+                            excluded_groups=exclude_groups,
+                            braintrust_org=braintrust_org,
+                        )
+                        return False
+            
+            # Check custom profile attribute filters
+            profile_filters = sync_rules.get("profile_filters", {}).get(braintrust_org)
+            if profile_filters:
+                for attr_name, expected_values in profile_filters.items():
+                    user_value = getattr(okta_resource.profile, attr_name, None)
+                    if user_value not in expected_values:
+                        self._logger.debug(
+                            "User profile attribute doesn't match filter",
+                            user_id=okta_resource.id,
+                            attribute=attr_name,
+                            user_value=user_value,
+                            expected_values=expected_values,
+                            braintrust_org=braintrust_org,
+                        )
+                        return False
+            
+            return True
+            
+        except Exception as e:
+            self._logger.warning(
+                "Error checking sync rules, defaulting to sync",
+                user_id=okta_resource.id,
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            return True
+    
+    def calculate_updates(
+        self,
+        okta_resource: OktaUser,
+        braintrust_resource: BraintrustUser,
+    ) -> Dict[str, Any]:
+        """Calculate what updates are needed for a Braintrust user.
+        
+        Args:
+            okta_resource: Source Okta user
+            braintrust_resource: Existing Braintrust user
+            
+        Returns:
+            Dictionary of fields that need updating
+        """
+        updates = {}
+        
+        try:
+            # Extract current Okta user data
+            okta_data = self._extract_user_data(okta_resource)
+            
+            # Compare first name
+            if okta_data["given_name"] != getattr(braintrust_resource, "given_name", ""):
+                updates["given_name"] = okta_data["given_name"]
+            
+            # Compare last name
+            if okta_data["family_name"] != getattr(braintrust_resource, "family_name", ""):
+                updates["family_name"] = okta_data["family_name"]
+            
+            # Compare email (usually shouldn't change, but handle it)
+            if okta_data["email"] != getattr(braintrust_resource, "email", ""):
+                updates["email"] = okta_data["email"]
+            
+            # Handle custom field mappings
+            if self.custom_field_mappings:
+                for okta_field, braintrust_field in self.custom_field_mappings.items():
+                    if okta_field in ["given_name", "family_name", "email"]:
+                        continue  # Already handled above
+                    
+                    okta_value = getattr(okta_resource.profile, okta_field, None)
+                    braintrust_value = getattr(braintrust_resource, braintrust_field, None)
+                    
+                    if okta_value != braintrust_value:
+                        updates[braintrust_field] = okta_value
+            
+            self._logger.debug(
+                "Calculated user updates",
+                okta_user_id=okta_resource.id,
+                braintrust_user_id=getattr(braintrust_resource, "id", "unknown"),
+                updates=list(updates.keys()),
+            )
+            
+            return updates
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to calculate user updates",
+                okta_user_id=okta_resource.id,
+                braintrust_user_id=getattr(braintrust_resource, "id", "unknown"),
+                error=str(e),
+            )
+            return {}
+    
+    def _extract_user_data(self, okta_user: OktaUser) -> Dict[str, Any]:
+        """Extract user data from Okta user for Braintrust creation/update.
+        
+        Args:
+            okta_user: Okta user object
+            
+        Returns:
+            Dictionary with user data for Braintrust
+        """
+        user_data = {
+            "given_name": okta_user.profile.firstName or "",
+            "family_name": okta_user.profile.lastName or "",
+            "email": okta_user.profile.email,
+        }
+        
+        # Add custom fields if configured
+        additional_fields = {}
+        if self.custom_field_mappings:
+            for okta_field, braintrust_field in self.custom_field_mappings.items():
+                if okta_field in ["firstName", "lastName", "email"]:
+                    continue  # Already handled in main fields
+                
+                value = getattr(okta_user.profile, okta_field, None)
+                if value is not None:
+                    additional_fields[braintrust_field] = value
+        
+        if additional_fields:
+            user_data["additional_fields"] = additional_fields
+        
+        return user_data
+    
+    async def find_braintrust_user_by_email(
+        self,
+        email: str,
+        braintrust_org: str,
+    ) -> Optional[BraintrustUser]:
+        """Find a Braintrust user by email address.
+        
+        Args:
+            email: Email address to search for
+            braintrust_org: Braintrust organization name
+            
+        Returns:
+            Braintrust user if found, None otherwise
+        """
+        if braintrust_org not in self.braintrust_clients:
+            return None
+        
+        try:
+            client = self.braintrust_clients[braintrust_org]
+            return await client.find_user_by_email(email)
+        except Exception as e:
+            self._logger.warning(
+                "Error searching for Braintrust user by email",
+                email=email,
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            return None
