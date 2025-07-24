@@ -1,409 +1,528 @@
 # Okta-Braintrust Sync
 
-> **🚀 Hybrid SCIM-like Identity Synchronization**  
-> Sync users and groups from Okta to multiple Braintrust organizations with both declarative batch sync and real-time webhook support.
+**Automated team onboarding and permission management for GenAI Platform teams**
+
+Sync your organization's teams from Okta groups to Braintrust organizations automatically, eliminating manual account creation and permission management.
 
 ## Overview
 
-This tool provides **hybrid synchronization** between Okta and Braintrust organizations, replicating SCIM functionality that's not natively available. It supports both **declarative batch operations** (Terraform-like) and **real-time event processing** via Okta webhooks.
+This tool helps GenAI Platform teams automate the process of:
+- **🏢 Team Onboarding**: Bulk sync entire teams from Okta groups to Braintrust organizations
+- **🔑 Permission Management**: Map Okta groups to appropriate Braintrust access levels
+- **🌍 Multi-Environment Support**: Manage dev/staging/prod Braintrust organizations 
+- **📊 Compliance & Auditing**: Track all access changes with detailed audit logs
+- **⚡ Declarative Management**: Terraform-like plan/apply workflow for predictable changes
 
-### Key Features
+Instead of manually creating Braintrust accounts for each team member and managing group permissions, you define sync rules in YAML and let the tool handle the automation.
 
-- **🔄 Hybrid Sync Modes**: Choose between declarative batch sync, real-time webhooks, or both
-- **🏢 Multi-Organization**: Sync to multiple Braintrust organizations simultaneously  
-- **📋 Declarative Configuration**: Terraform-like YAML configuration with plan/apply workflow
-- **⚡ Real-time Updates**: Immediate sync via Okta Event Hooks for security-critical changes
-- **🔍 Comprehensive Auditing**: Detailed logs and reports for compliance and troubleshooting
-- **🔧 Flexible Mapping**: Multiple identity mapping strategies (email, custom fields, manual)
-- **🛡️ Production Ready**: Retry logic, error recovery, state management, and monitoring
+### Why This Tool?
 
-### Architecture
+**Before**: Manual team onboarding
+- IT creates individual Braintrust accounts
+- Manually adds users to appropriate groups
+- Tracks permission changes in spreadsheets
+- Reactive access management
 
-```
-┌─────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│    Okta     │────│  Sync Engine     │────│   Braintrust    │
-│   (Source)  │    │                  │    │ (Destinations)  │
-│             │    │ ┌──────────────┐ │    │                 │
-│ • Users     │────│ │ Declarative  │ │────│ • Org 1        │
-│ • Groups    │    │ │ (Batch)      │ │    │ • Org 2        │
-│ • Events    │────│ │ Real-time    │ │────│ • Org N        │
-│             │    │ │ (Webhooks)   │ │    │                 │
-└─────────────┘    │ └──────────────┘ │    └─────────────────┘
-                   │                  │
-                   │ • State Mgmt     │
-                   │ • Audit Logs     │
-                   │ • Reconciliation │
-                   └──────────────────┘
-```
+**After**: Automated sync from Okta
+- New team members get Braintrust access automatically
+- Group memberships stay in sync with Okta
+- All changes are audited and traceable
+- Proactive, policy-driven access management
 
 ## Quick Start
 
-### Installation
+### 1. Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/braintrustdata/okta-braintrust-sync
+git clone <repository-url>
 cd okta-braintrust-sync
 
-# Install with uv (recommended)
-uv sync --all-extras
-source .venv/bin/activate
-
-# Or install with pip
-pip install -e ".[dev]"
-
-# Verify installation
-okta-braintrust-sync --help
+# Create virtual environment and install
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -e .
 ```
 
-### Configuration
+### 2. Set Up API Credentials
 
-Create your sync configuration file:
+You'll need API access to both Okta and Braintrust:
+
+**Okta API Token:**
+- Admin Console → Security → API → Tokens → Create Token
+- Required permissions: `okta.users.read`, `okta.groups.read`
+
+**Braintrust API Keys:**
+- Go to each Braintrust organization → Settings → API Keys
+- Create keys with user and group management permissions
 
 ```bash
-# Copy example configuration
-cp config/examples/hybrid.yaml my-sync-config.yaml
-
 # Set environment variables
-export OKTA_API_TOKEN="your_okta_api_token"
-export OKTA_DOMAIN="yourorg.okta.com"
-export BT_PROD_API_KEY="your_braintrust_prod_key"
-export BT_STAGING_API_KEY="your_braintrust_staging_key"
+export OKTA_API_TOKEN="your-okta-token"
+export BRAINTRUST_DEV_API_KEY="your-dev-api-key"
+export BRAINTRUST_PROD_API_KEY="your-prod-api-key"
 ```
 
-### Basic Usage
+### 3. Basic Configuration
 
-```bash
-# Validate configuration and connectivity
-okta-braintrust-sync validate --config my-sync-config.yaml
-
-# Declarative mode: plan what will be synced
-okta-braintrust-sync plan --config my-sync-config.yaml
-
-# Apply the sync plan
-okta-braintrust-sync apply --config my-sync-config.yaml
-
-# Start real-time webhook server
-okta-braintrust-sync webhook start --config my-sync-config.yaml
-
-# Start hybrid mode (both declarative scheduler + webhooks)
-okta-braintrust-sync start --config my-sync-config.yaml
-```
-
-## Configuration
-
-### Example Configuration
+Create a `sync-config.yaml` file:
 
 ```yaml
-# Okta source configuration
 okta:
-  domain: "myorg.okta.com"
+  domain: "yourcompany.okta.com"
   api_token: "${OKTA_API_TOKEN}"
-  
-# Target Braintrust organizations  
+
 braintrust_orgs:
-  production:
-    api_key: "${BT_PROD_API_KEY}"
+  dev:
+    api_key: "${BRAINTRUST_DEV_API_KEY}"
     url: "https://api.braintrust.dev"
-  staging:
-    api_key: "${BT_STAGING_API_KEY}" 
+  prod:
+    api_key: "${BRAINTRUST_PROD_API_KEY}" 
     url: "https://api.braintrust.dev"
 
-# Sync modes configuration
-sync_modes:
-  declarative:
-    enabled: true
-    schedule: "0 */4 * * *"        # Every 4 hours
-    full_reconciliation: "0 2 * * 0"  # Weekly full sync
-    
-  realtime:
-    enabled: true
-    webhook_port: 8080
-    critical_events_only: true    # Security-critical events only
-
-# Sync rules - who gets synced where
 sync_rules:
   users:
     enabled: true
     mappings:
-      - okta_filter: 'profile.department eq "Engineering"'
-        braintrust_orgs: ["production", "staging"]
-      - okta_filter: 'profile.department eq "QA"'
-        braintrust_orgs: ["staging"]
-    
-    identity_mapping:
-      strategy: "email"  # email, custom_field, mapping_file
-      
+      # Sync all active users from AI/ML teams
+      - okta_filter: 'status eq "ACTIVE" and (profile.department eq "ML Engineering" or profile.department eq "Data Science")'
+        braintrust_orgs: ["dev", "prod"]
+        identity_mapping: "email"
+
   groups:
     enabled: true
     mappings:
-      - okta_group_filter: 'type eq "OKTA_GROUP" and profile.name sw "Engineering"'
-        braintrust_orgs: ["production", "staging"]
-        name_transform: "okta-{group.name}"
-      - okta_group_filter: 'profile.name eq "QA Team"'
+      # ML Engineering team
+      - okta_group_filter: 'profile.name eq "ML-Engineering"'
+        braintrust_orgs: ["dev", "prod"]
+        group_name_template: "ml-engineering"
+        
+      # Data Science team (read-only in prod)
+      - okta_group_filter: 'profile.name eq "Data-Science"'
+        braintrust_orgs: ["dev"]
+        group_name_template: "data-science"
+```
+
+### 4. Test and Run
+
+```bash
+# Test configuration and API connectivity
+okta-braintrust-sync validate --config sync-config.yaml
+
+# Preview what will be synced (dry run)
+okta-braintrust-sync plan --config sync-config.yaml
+
+# Execute the sync
+okta-braintrust-sync apply --config sync-config.yaml --auto-approve
+```
+
+## Common Team Onboarding Scenarios
+
+### Scenario 1: Onboard New ML Engineering Team
+
+**Situation**: Your ML Engineering team needs access to Braintrust for experiment tracking.
+
+```yaml
+sync_rules:
+  users:
+    mappings:
+      - okta_filter: 'profile.department eq "ML Engineering" and status eq "ACTIVE"'
+        braintrust_orgs: ["dev", "prod"]
+        
+  groups:
+    mappings:
+      - okta_group_filter: 'profile.name eq "ML-Engineering"'
+        braintrust_orgs: ["dev", "prod"]
+        group_name_template: "ml-engineering"
+```
+
+**Result**: All active ML Engineering team members get accounts in both dev and prod Braintrust orgs, with appropriate group membership.
+
+### Scenario 2: Data Science Read-Only Access
+
+**Situation**: Data Scientists need to view experiments but not modify them in production.
+
+```yaml
+sync_rules:
+  groups:
+    mappings:
+      - okta_group_filter: 'profile.name eq "Data-Science"'
+        braintrust_orgs: ["dev", "prod"]
+        group_name_template: "data-science-viewers"
+        # Note: Configure read-only permissions in Braintrust for this group
+```
+
+### Scenario 3: Multi-Team Platform Setup
+
+**Situation**: Platform team managing multiple AI/ML teams with different access needs.
+
+```yaml
+sync_rules:
+  users:
+    mappings:
+      # Sync all AI/ML organization users
+      - okta_filter: 'profile.organization eq "AI-ML" and status eq "ACTIVE"'
+        braintrust_orgs: ["dev", "staging", "prod"]
+        
+  groups:
+    mappings:
+      # Platform admins get full access everywhere
+      - okta_group_filter: 'profile.name eq "GenAI-Platform-Admins"'
+        braintrust_orgs: ["dev", "staging", "prod"]
+        group_name_template: "platform-admins"
+        
+      # Individual teams get dev access + limited prod access
+      - okta_group_filter: 'profile.name sw "Team-"'  # Matches Team-Alpha, Team-Beta, etc.
+        braintrust_orgs: ["dev"]
+        group_name_template: "${okta_group_name_lower}"
+        
+      # Senior teams also get staging access
+      - okta_group_filter: 'profile.name in ["Team-Alpha", "Team-Beta"]'
         braintrust_orgs: ["staging"]
-
-# Sync behavior
-sync_options:
-  dry_run: false
-  create_missing: true
-  update_existing: true  
-  remove_extra: false    # SCIM-like: don't delete users/groups not in Okta
-  batch_size: 50
-
-# Audit configuration
-audit:
-  enabled: true
-  log_file: "./logs/sync-{timestamp}.log"
-  retention_days: 90
+        group_name_template: "${okta_group_name_lower}-staging"
 ```
 
-See [Configuration Guide](docs/configuration.md) for complete reference.
+## Configuration Reference
 
-## Sync Modes
+### Okta Configuration
 
-### Declarative Mode (Terraform-like)
+```yaml
+okta:
+  domain: "yourcompany.okta.com"         # Your Okta domain
+  api_token: "${OKTA_API_TOKEN}"         # API token with read access to users/groups
+  rate_limit_per_minute: 600             # Optional: API rate limiting
+  timeout_seconds: 30                    # Optional: Request timeout
+```
 
-Plan and apply changes in controlled batches:
+**Required Okta Permissions**: Your API token needs read access to:
+- Users (`okta.users.read`)
+- Groups (`okta.groups.read`)
+
+### Braintrust Organizations
+
+```yaml
+braintrust_orgs:
+  dev:
+    api_key: "${BRAINTRUST_DEV_API_KEY}"
+    url: "https://api.braintrust.dev"
+    
+  prod:
+    api_key: "${BRAINTRUST_PROD_API_KEY}"
+    url: "https://api.braintrust.dev"
+```
+
+**Required Braintrust Permissions**: API keys need ability to:
+- Create/update users
+- Create/update groups  
+- Manage group memberships
+
+### User Sync Rules
+
+```yaml
+sync_rules:
+  users:
+    enabled: true
+    mappings:
+      - okta_filter: 'status eq "ACTIVE"'                    # SCIM filter for users
+        braintrust_orgs: ["dev", "prod"]                     # Target organizations
+        identity_mapping: "email"                            # How to match users (email/custom)
+        domain_filters: ["company.com"]                      # Optional: Only sync specific domains
+        custom_field_mappings:                               # Optional: Map custom fields
+          department: "profile.department"
+          team: "profile.customField.team"
+```
+
+### Group Sync Rules
+
+```yaml
+sync_rules:
+  groups:
+    enabled: true
+    mappings:
+      - okta_group_filter: 'type eq "OKTA_GROUP"'           # SCIM filter for groups
+        braintrust_orgs: ["dev", "prod"]                     # Target organizations
+        group_name_template: "${okta_group_name_lower}"      # How to name groups in Braintrust
+        group_name_prefix: "okta-"                           # Optional: Add prefix
+        group_name_suffix: "-team"                           # Optional: Add suffix
+        member_filters:                                      # Optional: Filter group members
+          - 'status eq "ACTIVE"'
+```
+
+### Template Variables
+
+Use these variables in `group_name_template`:
+
+- `${okta_group_name}` - Original Okta group name
+- `${okta_group_name_lower}` - Lowercase version
+- `${okta_group_name_slug}` - URL-safe slug version
+- `${braintrust_org}` - Target Braintrust organization name
+
+## CLI Commands
+
+### Validate Configuration
 
 ```bash
-# See what will be synced
-okta-braintrust-sync plan --config config.yaml
+# Test configuration and API connectivity
+okta-braintrust-sync validate --config sync-config.yaml
 
-# Apply the changes
-okta-braintrust-sync apply --config config.yaml
+# Test only Okta connectivity
+okta-braintrust-sync validate --config sync-config.yaml --okta-only
 
-# Schedule regular syncs
-okta-braintrust-sync start --declarative-only --config config.yaml
+# Test only Braintrust connectivity
+okta-braintrust-sync validate --config sync-config.yaml --braintrust-only
 ```
 
-**Use Cases:**
-- Initial bulk sync
-- Scheduled reconciliation 
-- Change review before application
-- Large-scale updates
-
-### Real-time Mode (Webhook-driven)
-
-Immediate sync on Okta changes:
+### Preview Changes
 
 ```bash
-# Start webhook server
-okta-braintrust-sync webhook start --config config.yaml
+# Generate sync plan for all organizations
+okta-braintrust-sync plan --config sync-config.yaml
 
-# Configure Okta Event Hook to point to: http://your-server:8080/webhook/events
+# Plan for specific organizations
+okta-braintrust-sync plan --config sync-config.yaml --org dev --org staging
+
+# Plan for specific resource types
+okta-braintrust-sync plan --config sync-config.yaml --resource user --resource group
+
+# Plan with custom filters
+okta-braintrust-sync plan --config sync-config.yaml \
+  --user-filter 'profile.department eq "ML Engineering"' \
+  --group-filter 'profile.name sw "Team-"'
 ```
 
-**Use Cases:**
-- Immediate user deprovisioning (security)
-- Real-time access updates
-- Live group membership changes
-- SCIM-like behavior
-
-### Hybrid Mode (Best of Both)
-
-Combines both approaches:
+### Execute Sync
 
 ```bash
-# Start both modes
-okta-braintrust-sync start --config config.yaml
+# Apply changes with confirmation prompt
+okta-braintrust-sync apply --config sync-config.yaml
+
+# Apply changes automatically (no prompt)
+okta-braintrust-sync apply --config sync-config.yaml --auto-approve
+
+# Dry run (show what would be done without making changes)
+okta-braintrust-sync apply --config sync-config.yaml --dry-run
+
+# Control concurrency and error handling
+okta-braintrust-sync apply --config sync-config.yaml \
+  --max-concurrent 10 \
+  --continue-on-error
 ```
 
-**Benefits:**
-- Real-time for security-critical events
-- Scheduled reconciliation catches missed events
-- Redundancy and reliability
-- Flexible event routing
-
-## Development
-
-### Setup Development Environment
+### Show Configuration
 
 ```bash
-# Install development dependencies
-uv sync --all-extras --dev
-
-# Install pre-commit hooks
-pre-commit install
-
-# Run tests
-pytest
-
-# Run linting
-ruff check --fix
-mypy sync/
+# Display current configuration summary
+okta-braintrust-sync show --config sync-config.yaml
 ```
 
-### Project Structure
+## Monitoring & Auditing
 
-```
-okta-braintrust-sync/
-├── sync/                    # Main Python package
-│   ├── config/             # Configuration management
-│   ├── clients/            # Okta & Braintrust API clients
-│   ├── core/               # Sync engine & orchestration
-│   ├── resources/          # User & group sync logic
-│   ├── webhook/            # Real-time webhook handling
-│   ├── audit/              # Logging & reporting
-│   └── utils/              # Shared utilities
-├── config/                 # Configuration schemas & examples
-├── tests/                  # Test suite
-├── docs/                   # Documentation
-└── deployments/            # Deployment configurations
-```
+### Audit Logs
 
-### Running Tests
+All sync operations are logged to `./logs/audit/` with:
+- **Structured JSON logs** for each operation
+- **Execution summaries** with statistics and errors
+- **Before/after state tracking** for compliance
 
-```bash
-# All tests
-pytest
-
-# Unit tests only
-pytest tests/unit/
-
-# Integration tests (requires test credentials)
-pytest tests/integration/ --okta-token=$TEST_OKTA_TOKEN
-
-# End-to-end tests
-pytest tests/e2e/ --slow
+Example audit log entry:
+```json
+{
+  "event_id": "sync-user-123",
+  "event_type": "resource_create",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "execution_id": "exec-456",
+  "resource_type": "user",
+  "resource_id": "john.doe@company.com",
+  "braintrust_org": "prod",
+  "operation": "CREATE",
+  "success": true,
+  "before_state": null,
+  "after_state": {
+    "id": "bt-user-789",
+    "email": "john.doe@company.com",
+    "name": "John Doe"
+  }
+}
 ```
 
-## Deployment
+### State Management
 
-### Docker
+The tool maintains sync state in `./state/` to:
+- Track resource mappings between Okta and Braintrust
+- Enable incremental syncs (only process changes)
+- Support recovery from failed operations
+- Prevent duplicate operations
 
-```bash
-# Build image
-docker build -t okta-braintrust-sync .
-
-# Run declarative mode
-docker run -v ./config.yaml:/app/config.yaml okta-braintrust-sync apply
-
-# Run webhook server
-docker run -p 8080:8080 -v ./config.yaml:/app/config.yaml okta-braintrust-sync webhook start
-```
-
-### Kubernetes
-
-```bash
-# Apply manifests
-kubectl apply -f deployments/kubernetes/
-```
-
-### Systemd Service
-
-```bash
-# Install service
-sudo cp deployments/systemd/okta-braintrust-sync.service /etc/systemd/system/
-sudo systemctl enable okta-braintrust-sync
-sudo systemctl start okta-braintrust-sync
-```
-
-## Monitoring & Troubleshooting
-
-### Logs & Metrics
-
-```bash
-# View audit logs
-tail -f logs/sync-$(date +%Y%m%d).log
-
-# Check sync status
-okta-braintrust-sync status --config config.yaml
-
-# View last sync report
-cat state/last-sync-report.json
-```
+## Troubleshooting
 
 ### Common Issues
 
-**Connection Issues:**
+**Configuration Validation Errors**
 ```bash
-# Test Okta connectivity
-okta-braintrust-sync validate --okta-only --config config.yaml
-
-# Test Braintrust connectivity  
-okta-braintrust-sync validate --braintrust-only --config config.yaml
+# Error: "No configuration file found"
+# Solution: Specify config file path
+okta-braintrust-sync validate --config /path/to/sync-config.yaml
 ```
 
-**Webhook Issues:**
+**API Connectivity Issues**
 ```bash
-# Check webhook server status
-curl http://localhost:8080/health
+# Error: "Okta API connection failed"
+# Check: 
+# 1. API token is valid and not expired
+# 2. Token has required permissions (users.read, groups.read)
+# 3. Okta domain is correct
+# 4. Network connectivity to Okta
 
-# Test webhook endpoint
-curl -X POST http://localhost:8080/webhook/events \
-  -H "Content-Type: application/json" \
-  -d '{"test": true}'
+# Error: "Braintrust API connection failed"
+# Check:
+# 1. API key is valid and not expired
+# 2. API key has required permissions (user/group management)
+# 3. Braintrust organization URL is correct
+# 4. Network connectivity to Braintrust
 ```
 
-See [Troubleshooting Guide](docs/troubleshooting.md) for detailed solutions.
+**Sync Planning Issues**
+```bash
+# Error: "No users/groups match filters"
+# Check:
+# 1. SCIM filters are correct syntax
+# 2. Users/groups exist in Okta with expected attributes
+# 3. Filters aren't too restrictive
 
-## Security
+# Debug with verbose logging
+STRUCTLOG_LEVEL=DEBUG okta-braintrust-sync plan --config sync-config.yaml
+```
 
-### Authentication
+**Execution Failures**
+```bash
+# Error: "Rate limit exceeded"
+# Solution: Reduce rate limits in config
+okta:
+  rate_limit_per_minute: 300  # Lower from default 600
 
-- **Okta**: API token with appropriate permissions
-- **Braintrust**: Organization API keys with user/group management permissions
-- **Webhooks**: Signature verification for event authenticity
+# Error: "Permission denied"
+# Check: API keys have required permissions in both systems
+```
 
-### Best Practices
+### Debug Mode
 
-- Store credentials in environment variables or secure secret management
-- Use least-privilege API permissions
-- Enable audit logging for compliance
-- Regularly rotate API tokens
-- Monitor sync activities and failures
+Enable detailed logging:
+```bash
+export STRUCTLOG_LEVEL=DEBUG
+okta-braintrust-sync plan --config sync-config.yaml
+```
 
-### Permissions Required
+### Recovery from Failed Syncs
 
-**Okta API Token Permissions:**
-- `okta.users.read`
-- `okta.groups.read`  
-- `okta.events.read` (for webhooks)
+If a sync fails partway through:
+```bash
+# Check current state
+okta-braintrust-sync show --config sync-config.yaml
 
-**Braintrust API Key Permissions:**
-- User management (create, update users)
-- Group management (create, update, manage groups)
-- Organization read access
+# Re-run the sync (it will resume from where it left off)
+okta-braintrust-sync apply --config sync-config.yaml --continue-on-error
+```
 
-## Support
+## Best Practices
 
-### Getting Help
+### Security
 
-1. **Documentation**: Check [docs/](docs/) directory
-2. **Issues**: [GitHub Issues](https://github.com/braintrustdata/okta-braintrust-sync/issues)
-3. **Discussions**: [GitHub Discussions](https://github.com/braintrustdata/okta-braintrust-sync/discussions)
+- **API Tokens**: Store in environment variables, never commit to code
+- **Least Privilege**: Use API tokens with minimal required permissions
+- **Audit Logs**: Regularly review sync logs for unauthorized changes
+- **Network Security**: Consider running in secure environment with limited network access
+- **State Files**: Protect state directory as it contains resource mappings
 
-### Contributing
+### Operational
 
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+- **Start Small**: Begin with dev environment and a single team
+- **Test Filters**: Use `plan` command to verify filters before applying
+- **Monitor Logs**: Set up log monitoring for failed operations
+- **Regular Reconciliation**: Run periodic full syncs to catch drift
+- **Backup State**: Include state directory in your backup strategy
 
-## License
+### Team Onboarding Workflow
 
-This project is licensed under the MIT License - see [LICENSE](LICENSE) file for details.
+1. **Plan**: Define which Okta groups should map to which Braintrust orgs
+2. **Configure**: Set up sync rules in configuration file
+3. **Test**: Use `plan` command to preview changes
+4. **Apply**: Execute sync with `--dry-run` first, then real apply
+5. **Verify**: Check Braintrust organizations for expected users/groups
+6. **Monitor**: Review audit logs for any issues
+7. **Iterate**: Refine configuration based on results
 
----
+## Advanced Configuration
+
+### Custom Identity Mapping
+
+For complex identity scenarios:
+
+```yaml
+sync_rules:
+  users:
+    mappings:
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["prod"]
+        identity_mapping: "custom"
+        identity_mapping_file: "./identity-mappings.json"  # Custom mapping file
+```
+
+### Environment-Specific Settings
+
+Use different configs per environment:
+
+```bash
+# Development
+okta-braintrust-sync apply --config configs/dev-sync.yaml
+
+# Production  
+okta-braintrust-sync apply --config configs/prod-sync.yaml
+```
+
+### Scheduled Syncs
+
+Set up regular syncs with cron:
+
+```bash
+# Add to crontab for daily syncs at 2 AM
+0 2 * * * /path/to/venv/bin/okta-braintrust-sync apply --config /path/to/sync-config.yaml --auto-approve
+```
+
+## Architecture
+
+The tool uses a declarative, Terraform-like approach:
+1. **Plan**: Analyze current state vs desired state
+2. **Apply**: Execute planned changes
+3. **Audit**: Log all operations for compliance
+
+This ensures predictable, traceable changes to your Braintrust access management.
 
 ## Quick Command Reference
 
 ```bash
 # Configuration & Validation
-okta-braintrust-sync validate --config config.yaml
-okta-braintrust-sync show --config config.yaml
+okta-braintrust-sync validate --config sync-config.yaml
+okta-braintrust-sync show --config sync-config.yaml
 
-# Declarative Mode  
-okta-braintrust-sync plan --config config.yaml
-okta-braintrust-sync apply --config config.yaml
+# Plan & Apply Changes
+okta-braintrust-sync plan --config sync-config.yaml
+okta-braintrust-sync apply --config sync-config.yaml --auto-approve
 
-# Real-time Mode
-okta-braintrust-sync webhook start --config config.yaml
-okta-braintrust-sync webhook status
+# Dry Run Testing
+okta-braintrust-sync apply --config sync-config.yaml --dry-run
 
-# Hybrid Mode
-okta-braintrust-sync start --config config.yaml
-okta-braintrust-sync status
-
-# Utilities
-okta-braintrust-sync reconcile --full --config config.yaml
-okta-braintrust-sync replay --since "2024-01-15" --config config.yaml
+# Filtered Operations
+okta-braintrust-sync plan --config sync-config.yaml --org dev --resource user
 ```
+
+## Support
+
+For issues and questions:
+1. Check the troubleshooting section above
+2. Review audit logs in `./logs/audit/`
+3. Enable debug logging for more details
+4. Verify configuration syntax against examples
+
+---
+
+**Ready to get started?** Follow the [Quick Start](#quick-start) guide to set up automated team onboarding for your GenAI platform!
