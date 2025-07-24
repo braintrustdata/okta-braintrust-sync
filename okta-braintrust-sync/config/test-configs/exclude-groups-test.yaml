@@ -1,0 +1,32 @@
+# Exclude Groups Test Configuration  
+# Use this to test filtering out unwanted groups (like AD imported groups)
+
+okta:
+  domain: "your-org.okta.com"  # Replace with your actual Okta domain
+  api_token: "${OKTA_API_TOKEN}"
+
+braintrust_orgs:
+  test:
+    api_key: "${BRAINTRUST_TEST_API_KEY}"
+    url: "https://api.braintrust.dev"
+
+sync_modes:
+  declarative:
+    enabled: true
+
+sync_rules:
+  users:
+    enabled: true
+    mappings:
+      # Only active users (should exclude carlos+inactive)
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["test"]
+        enabled: true
+
+  groups:
+    enabled: true
+    mappings:
+      # Exclude the AD-Imported-Group (should find 4 groups instead of 5)
+      - okta_group_filter: 'type eq "OKTA_GROUP" and profile.name ne "AD-Imported-Group"'
+        braintrust_orgs: ["test"]
+        enabled: true
