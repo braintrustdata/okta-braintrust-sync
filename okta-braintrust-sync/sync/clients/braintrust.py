@@ -518,6 +518,254 @@ class BraintrustClient:
             "org_name": self.org_name,
         }
     
+    # Organization Member Management Methods
+    
+    async def invite_organization_members(
+        self,
+        emails: Optional[List[str]] = None,
+        user_ids: Optional[List[str]] = None,
+        group_ids: Optional[List[str]] = None,
+        group_names: Optional[List[str]] = None,
+        send_invite_emails: bool = True,
+        org_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Invite members to the organization.
+        
+        Args:
+            emails: List of email addresses to invite
+            user_ids: List of existing user IDs to add
+            group_ids: List of group IDs to add invited users to
+            group_names: List of group names to add invited users to
+            send_invite_emails: Whether to send invitation emails
+            org_name: Organization name (if API key has access to multiple orgs)
+            
+        Returns:
+            API response with success status and any errors
+            
+        Raises:
+            BraintrustError: If invitation fails
+        """
+        try:
+            self._request_count += 1
+            
+            # Build invite_users payload
+            invite_users = {}
+            if emails:
+                invite_users["emails"] = emails
+            if user_ids:
+                invite_users["ids"] = user_ids
+            if group_ids:
+                invite_users["group_ids"] = group_ids
+            if group_names:
+                invite_users["group_names"] = group_names
+            invite_users["send_invite_emails"] = send_invite_emails
+            
+            # Build request payload
+            payload = {"invite_users": invite_users}
+            if org_name:
+                payload["org_name"] = org_name
+            
+            # Use the organization members endpoint
+            # Note: This uses the generic client request method since the SDK may not have this endpoint
+            response = await self._make_request("PATCH", "/v1/organization/members", payload)
+            
+            self._logger.info(
+                "Invited organization members",
+                emails=emails or [],
+                user_ids=user_ids or [],
+                group_count=len(group_ids or []) + len(group_names or []),
+                send_emails=send_invite_emails,
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def remove_organization_members(
+        self,
+        emails: Optional[List[str]] = None,
+        user_ids: Optional[List[str]] = None,
+        org_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Remove members from the organization.
+        
+        Args:
+            emails: List of email addresses to remove
+            user_ids: List of user IDs to remove
+            org_name: Organization name (if API key has access to multiple orgs)
+            
+        Returns:
+            API response with success status
+            
+        Raises:
+            BraintrustError: If removal fails
+        """
+        try:
+            self._request_count += 1
+            
+            # Build remove_users payload
+            remove_users = {}
+            if emails:
+                remove_users["emails"] = emails
+            if user_ids:
+                remove_users["ids"] = user_ids
+            
+            # Build request payload
+            payload = {"remove_users": remove_users}
+            if org_name:
+                payload["org_name"] = org_name
+            
+            # Use the organization members endpoint
+            response = await self._make_request("PATCH", "/v1/organization/members", payload)
+            
+            self._logger.info(
+                "Removed organization members",
+                emails=emails or [],
+                user_ids=user_ids or [],
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Make a raw HTTP request to the Braintrust API.
+        
+        Args:
+            method: HTTP method (GET, POST, PATCH, etc.)
+            endpoint: API endpoint path
+            payload: Request body payload
+            
+        Returns:
+            Response data as dictionary
+            
+        Raises:
+            BraintrustError: If request fails
+        """
+        import httpx
+        import asyncio
+        
+        try:
+            # Get the base URL and API key from the client
+            base_url = str(self.api_url).rstrip('/')
+            api_key = self.client.api_key
+            
+            # Build full URL
+            url = f"{base_url}{endpoint}"
+            
+            # Prepare headers
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            
+            # Make the request
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                if method.upper() == "GET":
+                    response = await client.get(url, headers=headers)
+                elif method.upper() == "POST":
+                    response = await client.post(url, headers=headers, json=payload)
+                elif method.upper() == "PATCH":
+                    response = await client.patch(url, headers=headers, json=payload)
+                elif method.upper() == "DELETE":
+                    response = await client.delete(url, headers=headers)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                
+                # Check response status
+                response.raise_for_status()
+                
+                # Parse JSON response
+                return response.json()
+                
+        except httpx.HTTPStatusError as e:
+            self._logger.error(
+                "HTTP request failed",
+                method=method,
+                endpoint=endpoint,
+                status_code=e.response.status_code,
+                response_text=e.response.text,
+            )
+            raise BraintrustError(
+                message=f"HTTP {e.response.status_code}: {e.response.text}",
+                status_code=e.response.status_code,
+                response_text=e.response.text,
+            ) from e
+        except Exception as e:
+            self._logger.error(
+                "Request failed",
+                method=method,
+                endpoint=endpoint,
+                error=str(e),
+            )
+            raise BraintrustError(
+                message=f"Request failed: {e}",
+                status_code=None,
+                response_text=None,
+            ) from e
+    
+    async def invite_user_to_organization(
+        self,
+        email: str,
+        given_name: str,
+        family_name: str,
+        group_names: Optional[List[str]] = None,
+        send_invite_email: bool = True,
+        additional_fields: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Invite a single user to the organization with optional group assignment.
+        
+        This is a convenience method that wraps invite_organization_members for single user invitations.
+        
+        Args:
+            email: User's email address
+            given_name: User's first name (for logging/tracking)
+            family_name: User's last name (for logging/tracking)
+            group_names: List of group names to add the user to
+            send_invite_email: Whether to send invitation email
+            additional_fields: Additional user fields (for compatibility, not used in invitation)
+            
+        Returns:
+            API response with success status
+            
+        Raises:
+            BraintrustError: If invitation fails
+        """
+        try:
+            response = await self.invite_organization_members(
+                emails=[email],
+                group_names=group_names,
+                send_invite_emails=send_invite_email,
+            )
+            
+            self._logger.info(
+                "Invited user to organization",
+                email=email,
+                name=f"{given_name} {family_name}",
+                groups=group_names or [],
+                send_email=send_invite_email,
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to invite user to organization",
+                email=email,
+                name=f"{given_name} {family_name}",
+                error=str(e),
+            )
+            raise
+    
     # Search and Query Methods
     
     async def find_user_by_email(self, email: str) -> Optional[User]:

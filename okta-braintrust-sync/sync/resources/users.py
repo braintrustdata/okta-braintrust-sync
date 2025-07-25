@@ -134,16 +134,19 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
         okta_resource: OktaUser,
         braintrust_org: str,
         additional_data: Optional[Dict[str, Any]] = None,
-    ) -> BraintrustUser:
-        """Create a new user in Braintrust.
+    ) -> Dict[str, Any]:
+        """Invite a new user to Braintrust organization.
+        
+        Note: Changed from direct user creation to invitation due to API limitations.
+        Returns invitation response instead of User object.
         
         Args:
             okta_resource: Source Okta user
             braintrust_org: Target Braintrust organization
-            additional_data: Additional data for user creation
+            additional_data: Additional data for user invitation
             
         Returns:
-            Created Braintrust user
+            Invitation response dictionary
         """
         if braintrust_org not in self.braintrust_clients:
             raise ValueError(f"No Braintrust client configured for org: {braintrust_org}")
@@ -158,34 +161,64 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             if additional_data:
                 user_data.update(additional_data)
             
-            self._logger.debug(
-                "Creating Braintrust user",
-                okta_user_id=okta_resource.id,
-                email=user_data.get("email"),
-                braintrust_org=braintrust_org,
+            # Get group names if specified in additional data
+            group_names = additional_data.get("group_names") if additional_data else None
+            
+            # Get user ID safely
+            okta_user_id = (
+                okta_resource.get("id") if isinstance(okta_resource, dict)
+                else okta_resource.id
             )
             
-            braintrust_user = await client.create_user(
+            self._logger.debug(
+                "Inviting Braintrust user",
+                okta_user_id=okta_user_id,
+                email=user_data.get("email"),
+                braintrust_org=braintrust_org,
+                groups=group_names or [],
+            )
+            
+            # Use invitation API instead of direct user creation
+            invitation_response = await client.invite_user_to_organization(
+                email=user_data["email"],
                 given_name=user_data["given_name"],
                 family_name=user_data["family_name"],
-                email=user_data["email"],
+                group_names=group_names,
+                send_invite_email=True,
                 additional_fields=user_data.get("additional_fields"),
             )
             
             self._logger.info(
-                "Created Braintrust user",
-                okta_user_id=okta_resource.id,
-                braintrust_user_id=braintrust_user.id,
+                "Invited Braintrust user",
+                okta_user_id=okta_user_id,
                 email=user_data["email"],
                 braintrust_org=braintrust_org,
+                groups=group_names or [],
             )
             
-            return braintrust_user
+            # Create a standardized response that the base syncer expects
+            # The invitation API response may not include an 'id', so we use email as identifier
+            standardized_response = {
+                "id": user_data["email"],  # Use email as identifier since invited users don't have Braintrust IDs yet
+                "email": user_data["email"],
+                "given_name": user_data["given_name"],
+                "family_name": user_data["family_name"],
+                "invitation_status": "sent",
+                "groups": group_names or [],
+                "raw_response": invitation_response,
+            }
+            
+            return standardized_response
             
         except Exception as e:
+            # Get user ID safely for error logging
+            okta_user_id = (
+                okta_resource.get("id") if isinstance(okta_resource, dict)
+                else okta_resource.id
+            )
             self._logger.error(
-                "Failed to create Braintrust user",
-                okta_user_id=okta_resource.id,
+                "Failed to invite Braintrust user",
+                okta_user_id=okta_user_id,
                 braintrust_org=braintrust_org,
                 error=str(e),
             )
@@ -575,6 +608,86 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             user_data["additional_fields"] = additional_fields
         
         return user_data
+    
+    async def remove_braintrust_resource(
+        self,
+        braintrust_resource_id: str,
+        okta_resource: OktaUser,
+        braintrust_org: str,
+    ) -> Dict[str, Any]:
+        """Remove a user from Braintrust organization.
+        
+        Args:
+            braintrust_resource_id: Braintrust user ID or email
+            okta_resource: Source Okta user (for logging)
+            braintrust_org: Target Braintrust organization
+            
+        Returns:
+            Removal response dictionary
+            
+        Raises:
+            BraintrustError: If removal fails
+        """
+        if braintrust_org not in self.braintrust_clients:
+            raise ValueError(f"No Braintrust client configured for org: {braintrust_org}")
+        
+        try:
+            client = self.braintrust_clients[braintrust_org]
+            
+            # Get user ID and email safely
+            okta_user_id = (
+                okta_resource.get("id") if isinstance(okta_resource, dict)
+                else okta_resource.id
+            )
+            if isinstance(okta_resource, dict):
+                user_email = okta_resource.get("profile", {}).get("email", "")
+            else:
+                user_email = okta_resource.profile.get("email", "")
+            
+            self._logger.debug(
+                "Removing Braintrust user",
+                okta_user_id=okta_user_id,
+                braintrust_resource_id=braintrust_resource_id,
+                email=user_email,
+                braintrust_org=braintrust_org,
+            )
+            
+            # Remove user from organization
+            # Try to determine if braintrust_resource_id is an email or user ID
+            if "@" in braintrust_resource_id:
+                # It's an email address
+                removal_response = await client.remove_organization_members(
+                    emails=[braintrust_resource_id]
+                )
+            else:
+                # It's a user ID
+                removal_response = await client.remove_organization_members(
+                    user_ids=[braintrust_resource_id]
+                )
+            
+            self._logger.info(
+                "Removed Braintrust user",
+                okta_user_id=okta_user_id,
+                braintrust_resource_id=braintrust_resource_id,
+                email=user_email,
+                braintrust_org=braintrust_org,
+            )
+            
+            return removal_response
+            
+        except Exception as e:
+            okta_user_id = (
+                okta_resource.get("id") if isinstance(okta_resource, dict)
+                else okta_resource.id
+            )
+            self._logger.error(
+                "Failed to remove Braintrust user",
+                okta_user_id=okta_user_id,
+                braintrust_resource_id=braintrust_resource_id,
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            raise
     
     async def find_braintrust_user_by_email(
         self,
