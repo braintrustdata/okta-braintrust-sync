@@ -33,9 +33,9 @@ These test configurations are designed to work with the Terraform test data setu
 
 **Test Commands**:
 ```bash
-okta-braintrust-sync validate --config test-configs/basic-test.yaml
-okta-braintrust-sync plan --config test-configs/basic-test.yaml
-okta-braintrust-sync apply --config test-configs/basic-test.yaml --dry-run
+okta-braintrust-sync validate --config config/test-configs/basic-test.yaml
+okta-braintrust-sync plan --config config/test-configs/basic-test.yaml
+okta-braintrust-sync apply --config config/test-configs/basic-test.yaml --dry-run
 ```
 
 ### 2. `filtered-test.yaml` - Test Filtering

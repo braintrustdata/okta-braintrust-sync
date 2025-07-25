@@ -2,12 +2,12 @@
 # Use this first to test that everything works with the Terraform test data
 
 okta:
-  domain: "your-org.okta.com"  # Replace with your actual Okta domain
+  domain: "trial-6796441.okta.com"  # Replace with your actual Okta domain
   api_token: "${OKTA_API_TOKEN}"
 
 braintrust_orgs:
-  test:
-    api_key: "${BRAINTRUST_TEST_API_KEY}"
+  carlos:
+    api_key: "${BRAINTRUST_CARLOS_API_KEY}"
     url: "https://api.braintrust.dev"
 
 sync_modes:
@@ -20,7 +20,7 @@ sync_rules:
     mappings:
       # Should find 5 active users from Terraform setup
       - okta_filter: 'status eq "ACTIVE"'
-        braintrust_orgs: ["test"]
+        braintrust_orgs: ["carlos"]
         enabled: true
 
   groups:
@@ -28,5 +28,5 @@ sync_rules:
     mappings:
       # Should find 5 groups from Terraform setup
       - okta_group_filter: 'type eq "OKTA_GROUP"'
-        braintrust_orgs: ["test"]
+        braintrust_orgs: ["carlos"]
         enabled: true

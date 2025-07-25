@@ -6,8 +6,8 @@ okta:
   api_token: "${OKTA_API_TOKEN}"
 
 braintrust_orgs:
-  test:
-    api_key: "${BRAINTRUST_TEST_API_KEY}"
+  carlos:
+    api_key: "${BRAINTRUST_CARLOS_API_KEY}"
     url: "https://api.braintrust.dev"
 
 sync_modes:
@@ -20,7 +20,7 @@ sync_rules:
     mappings:
       # Only active users (should exclude carlos+inactive)
       - okta_filter: 'status eq "ACTIVE"'
-        braintrust_orgs: ["test"]
+        braintrust_orgs: ["carlos"]
         enabled: true
 
   groups:
@@ -28,5 +28,5 @@ sync_rules:
     mappings:
       # Exclude the AD-Imported-Group (should find 4 groups instead of 5)
       - okta_group_filter: 'type eq "OKTA_GROUP" and profile.name ne "AD-Imported-Group"'
-        braintrust_orgs: ["test"]
+        braintrust_orgs: ["carlos"]
         enabled: true

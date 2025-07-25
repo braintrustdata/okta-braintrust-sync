@@ -105,32 +105,27 @@ resource "okta_user" "test_inactive_user" {
 resource "okta_group" "ml_engineering" {
   name        = "ML-Engineering"
   description = "Machine Learning Engineering Team"
-  type        = "OKTA_GROUP"
 }
 
 resource "okta_group" "data_science" {
   name        = "Data-Science"
   description = "Data Science Team"
-  type        = "OKTA_GROUP"
 }
 
 resource "okta_group" "genai_platform_admins" {
   name        = "GenAI-Platform-Admins"
   description = "GenAI Platform Administration Team"
-  type        = "OKTA_GROUP"
 }
 
 resource "okta_group" "all_ai_ml" {
   name        = "All-AI-ML"
   description = "All AI/ML Teams (Parent Group)"
-  type        = "OKTA_GROUP"
 }
 
 # Test group for filtering (should be excluded)
 resource "okta_group" "test_ad_group" {
   name        = "AD-Imported-Group"
   description = "Simulated AD imported group that should be filtered out"
-  type        = "OKTA_GROUP"
 }
 
 # Group Memberships
