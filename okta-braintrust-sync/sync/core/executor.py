@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Callable
 import structlog
 from pydantic import BaseModel, Field
 
+from sync.audit.logger import AuditLogger, AuditSummary
 from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient
 from sync.core.planner import SyncPlan
@@ -89,6 +90,7 @@ class SyncExecutor:
         okta_client: OktaClient,
         braintrust_clients: Dict[str, BraintrustClient],
         state_manager: StateManager,
+        audit_logger: Optional[AuditLogger] = None,
         progress_callback: Optional[Callable[[ExecutionProgress], None]] = None,
     ) -> None:
         """Initialize sync executor.
@@ -97,11 +99,13 @@ class SyncExecutor:
             okta_client: Okta API client
             braintrust_clients: Dictionary of Braintrust clients by org name
             state_manager: State manager for tracking sync operations
+            audit_logger: Optional audit logger for comprehensive audit trails
             progress_callback: Optional callback for progress updates
         """
         self.okta_client = okta_client
         self.braintrust_clients = braintrust_clients
         self.state_manager = state_manager
+        self.audit_logger = audit_logger or AuditLogger()
         self.progress_callback = progress_callback
         
         # Initialize resource syncers
@@ -165,7 +169,14 @@ class SyncExecutor:
             dry_run=dry_run,
         )
         
+        # Start audit logging for this execution
+        audit_summary = self.audit_logger.start_execution_audit(execution_id)
+        
         try:
+            # Log all plan items for audit trail
+            for item in plan.get_all_items():
+                self.audit_logger.log_sync_plan_item(item, execution_id, "planning")
+            
             # Initialization phase
             progress.start_phase("initializing")
             self._notify_progress(progress)
@@ -220,6 +231,11 @@ class SyncExecutor:
                 duration_seconds=(progress.completed_at - progress.started_at).total_seconds(),
             )
             
+            # Complete audit logging successfully
+            final_audit_summary = self.audit_logger.complete_execution_audit(
+                success=True
+            )
+            
         except Exception as e:
             progress.start_phase("failed")
             progress.completed_at = datetime.now(timezone.utc)
@@ -230,6 +246,12 @@ class SyncExecutor:
                 execution_id=execution_id,
                 plan_id=plan.plan_id,
                 error=str(e),
+            )
+            
+            # Complete audit logging with failure
+            final_audit_summary = self.audit_logger.complete_execution_audit(
+                success=False,
+                error_message=str(e)
             )
         
         finally:
@@ -389,6 +411,9 @@ class SyncExecutor:
             
             if results:
                 result = results[0]
+                
+                # Log audit event for this sync operation
+                self.audit_logger.log_sync_result(result)
                 
                 if result.success:
                     self._logger.debug(

@@ -12,6 +12,7 @@ from rich.panel import Panel
 from rich.text import Text
 from pydantic import SecretStr
 
+from sync.audit.logger import AuditLogger
 from sync.config.loader import ConfigLoader, find_config_file
 from sync.config.models import SyncConfig
 from sync.clients.okta import OktaClient
@@ -339,10 +340,17 @@ def apply(
             def progress_callback(progress: ExecutionProgress):
                 progress_data["current_progress"] = progress
             
+            # Initialize audit logger
+            audit_logger = AuditLogger(
+                audit_dir=Path("./logs/audit"),
+                structured_logging=True,
+            )
+            
             executor = SyncExecutor(
                 okta_client=okta_client,
                 braintrust_clients=braintrust_clients,
                 state_manager=state_manager,
+                audit_logger=audit_logger,
                 progress_callback=progress_callback,
             )
             
