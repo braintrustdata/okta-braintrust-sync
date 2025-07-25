@@ -44,9 +44,11 @@ The tool has been enhanced with full user invitation capabilities and successful
 
 **🧪 Real-World Test Results:**
 - ✅ **Okta API**: Successfully retrieved 7 users and 7 groups from real Okta instance
-- ✅ **Braintrust API**: Successfully created 7 groups in real Braintrust organization
+- ✅ **User Invitations**: Successfully invited 6 users with automatic email notifications
+- ✅ **Group Sync**: Successfully synced 7 groups with proper state management
 - ✅ **State persistence**: All resource mappings saved and managed correctly
-- ✅ **Enhanced user workflow**: New invitation API eliminates previous limitations
+- ✅ **Enhanced user workflow**: Invitation API provides fully automated user onboarding
+- ✅ **Audit logging**: Complete audit trails generated for all operations
 - ✅ **End-to-end automation**: Complete plan → apply → audit cycle with no manual steps
 
 ### Why This Tool?
@@ -71,8 +73,8 @@ The tool has been enhanced with full user invitation capabilities and successful
 
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd okta-braintrust-sync
+git clone https://github.com/braintrustdata/braintrust-migrate
+cd braintrust-migrate/okta-braintrust-sync
 
 # Create virtual environment and install
 python -m venv venv
@@ -259,7 +261,7 @@ braintrust_orgs:
 ```
 
 **Required Braintrust Permissions**: API keys need ability to:
-- Create/update users
+- Invite users to organization (via organization member API)
 - Create/update groups  
 - Manage group memberships
 
@@ -272,11 +274,7 @@ sync_rules:
     mappings:
       - okta_filter: 'status eq "ACTIVE"'                    # SCIM filter for users
         braintrust_orgs: ["dev", "prod"]                     # Target organizations
-        identity_mapping: "email"                            # How to match users (email/custom)
-        domain_filters: ["company.com"]                      # Optional: Only sync specific domains
-        custom_field_mappings:                               # Optional: Map custom fields
-          department: "profile.department"
-          team: "profile.customField.team"
+        enabled: true
 ```
 
 ### Group Sync Rules
@@ -288,21 +286,10 @@ sync_rules:
     mappings:
       - okta_group_filter: 'type eq "OKTA_GROUP"'           # SCIM filter for groups
         braintrust_orgs: ["dev", "prod"]                     # Target organizations
-        group_name_template: "${okta_group_name_lower}"      # How to name groups in Braintrust
-        group_name_prefix: "okta-"                           # Optional: Add prefix
-        group_name_suffix: "-team"                           # Optional: Add suffix
-        member_filters:                                      # Optional: Filter group members
-          - 'status eq "ACTIVE"'
+        enabled: true
 ```
 
-### Template Variables
-
-Use these variables in `group_name_template`:
-
-- `${okta_group_name}` - Original Okta group name
-- `${okta_group_name_lower}` - Lowercase version
-- `${okta_group_name_slug}` - URL-safe slug version
-- `${braintrust_org}` - Target Braintrust organization name
+**Note**: Advanced features like custom field mappings, group name templates, and member filters are planned for future releases. Current implementation uses simple, reliable sync rules.
 
 ## CLI Commands
 
@@ -322,19 +309,8 @@ okta-braintrust-sync validate --config sync-config.yaml --braintrust-only
 ### Preview Changes
 
 ```bash
-# Generate sync plan for all organizations
+# Generate sync plan for all organizations and resource types
 okta-braintrust-sync plan --config sync-config.yaml
-
-# Plan for specific organizations
-okta-braintrust-sync plan --config sync-config.yaml --org dev --org staging
-
-# Plan for specific resource types
-okta-braintrust-sync plan --config sync-config.yaml --resource user --resource group
-
-# Plan with custom filters
-okta-braintrust-sync plan --config sync-config.yaml \
-  --user-filter 'profile.department eq "ML Engineering"' \
-  --group-filter 'profile.name sw "Team-"'
 ```
 
 ### Execute Sync
@@ -459,7 +435,7 @@ STRUCTLOG_LEVEL=DEBUG okta-braintrust-sync plan --config sync-config.yaml
 okta:
   rate_limit_per_minute: 300  # Lower from default 600
 
-# Success: User invitation workflow now automated
+# Success: User invitation workflow is fully automated
 # Users receive email invitations with automatic group assignment
 # No manual intervention required - fully end-to-end automation
 
@@ -518,17 +494,7 @@ okta-braintrust-sync apply --config sync-config.yaml --continue-on-error
 
 ### Custom Identity Mapping
 
-For complex identity scenarios:
-
-```yaml
-sync_rules:
-  users:
-    mappings:
-      - okta_filter: 'status eq "ACTIVE"'
-        braintrust_orgs: ["prod"]
-        identity_mapping: "custom"
-        identity_mapping_file: "./identity-mappings.json"  # Custom mapping file
-```
+*Note: Advanced identity mapping features are planned for future releases. Current implementation uses email-based identity matching.*
 
 ### Environment-Specific Settings
 
@@ -574,8 +540,8 @@ okta-braintrust-sync apply --config sync-config.yaml --auto-approve
 # Dry Run Testing
 okta-braintrust-sync apply --config sync-config.yaml --dry-run
 
-# Filtered Operations
-okta-braintrust-sync plan --config sync-config.yaml --org dev --resource user
+# Debug Mode
+STRUCTLOG_LEVEL=DEBUG okta-braintrust-sync plan --config sync-config.yaml
 ```
 
 ## Support
