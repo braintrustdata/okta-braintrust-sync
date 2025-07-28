@@ -37,7 +37,7 @@ Instead of manually creating Braintrust accounts for each team member and managi
 **🚧 Current Limitations:**
 - ❌ **Real-time webhooks**: Not yet implemented (commands exist but return "not implemented")
 - ❌ **Scheduled sync**: Cron-like scheduling not built yet
-- ❌ **Advanced filtering**: Some complex SCIM filters may need refinement
+- ❌ **Show command**: State display functionality is a placeholder
 
 **🎯 Production Ready for Complete User & Group Management:**
 The tool has been enhanced with full user invitation capabilities and successfully tested with real Okta and Braintrust APIs. Both user invitation and group synchronization work seamlessly with automatic email invitations and group assignment.
@@ -181,16 +181,16 @@ sync_rules:
 
 **Result**: All active users and standard Okta groups get synced to your dev Braintrust org. Test this first!
 
-### Scenario 2: Department-Based Filtering (Advanced)
+### Scenario 2: Filtered Sync (Advanced)
 
-**Situation**: After basic sync works, filter by department.
+**Situation**: After basic sync works, use SCIM filters for specific criteria.
 
 ```yaml
 sync_rules:
   users:
     enabled: true
     mappings:
-      # Only sync ML Engineering and Data Science teams
+      # Only sync users with specific status and criteria
       - okta_filter: 'status eq "ACTIVE" and profile.department eq "Engineering"'
         braintrust_orgs: ["dev", "prod"]
         enabled: true
@@ -198,13 +198,13 @@ sync_rules:
   groups:
     enabled: true
     mappings:
-      # Only sync specific groups by name
-      - okta_group_filter: 'type eq "OKTA_GROUP" and profile.name eq "ML-Team"'
+      # Only sync specific group types
+      - okta_group_filter: 'type eq "OKTA_GROUP"'
         braintrust_orgs: ["dev", "prod"]
         enabled: true
 ```
 
-**Note**: Complex filters like department matching should be tested after you verify basic sync works with your Okta setup.
+**Note**: SCIM filter syntax is supported - test filters carefully to ensure they match your Okta setup.
 
 ### Scenario 3: Multi-Organization Setup (Production)
 
@@ -289,7 +289,7 @@ sync_rules:
         enabled: true
 ```
 
-**Note**: Advanced features like custom field mappings, group name templates, and member filters are planned for future releases. Current implementation uses simple, reliable sync rules.
+**Note**: The current implementation uses straightforward, reliable sync rules with basic SCIM filtering. Complex filtering scenarios should be tested thoroughly before production use.
 
 ## CLI Commands
 
@@ -334,7 +334,7 @@ okta-braintrust-sync apply --config sync-config.yaml \
 ### Show Configuration
 
 ```bash
-# Display current configuration summary
+# Display basic configuration summary (state display functionality is limited)
 okta-braintrust-sync show --config sync-config.yaml
 ```
 
@@ -455,7 +455,7 @@ okta-braintrust-sync plan --config sync-config.yaml
 
 If a sync fails partway through:
 ```bash
-# Check current state
+# Check basic configuration (full state display is limited)
 okta-braintrust-sync show --config sync-config.yaml
 
 # Re-run the sync (it will resume from where it left off)
@@ -470,7 +470,7 @@ okta-braintrust-sync apply --config sync-config.yaml --continue-on-error
 - **Least Privilege**: Use API tokens with minimal required permissions
 - **Audit Logs**: Regularly review sync logs for unauthorized changes
 - **Network Security**: Consider running in secure environment with limited network access
-- **State Files**: Protect state directory as it contains resource mappings
+- **State Files**: Secure the ./state/ directory as it contains ID mappings between systems
 
 ### Operational
 
@@ -494,7 +494,7 @@ okta-braintrust-sync apply --config sync-config.yaml --continue-on-error
 
 ### Custom Identity Mapping
 
-*Note: Advanced identity mapping features are planned for future releases. Current implementation uses email-based identity matching.*
+*Note: Current implementation uses email-based identity matching between Okta and Braintrust. This works reliably for most organizational setups.*
 
 ### Environment-Specific Settings
 
