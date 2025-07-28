@@ -82,9 +82,6 @@ target/
 profile_default/
 ipython_config.py
 
-# Ruff
-.ruff_cache/
-
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
 #   intended to run in multiple environments; otherwise, check them in:
@@ -158,25 +155,89 @@ cython_debug/
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be added to the global gitignore or merged into this project gitignore.  For a PyCharm
-#  project, it is also recommended to include *.iws files to the project-specific gitignore.
-#  https://intellij-support.jetbrains.com/hc/en-us/articles/206544839
+#  project, it is not recommended to exclude the entire .idea directory since it contains
+#  useful information about the project.
 .idea/
 
 # VS Code
 .vscode/
 
-# macOS
-.DS_Store
+# Application-specific ignores
+*.log
+*.db
+*.sqlite
+*.sqlite3
 
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
+# Configuration files with secrets
+.env.local
+.env.production
+config/*.local.yaml
+config/*.prod.yaml
+sync-config.yaml
+my-sync-config.yaml
 
-# Migration tool specific
+# Runtime directories
+logs/
+state/
 checkpoints/
-*.checkpoint
-migration_state.json
+cache/
+tmp/
 
-# Requirements lock file
-requirements.lock 
+# Test outputs
+.coverage
+htmlcov/
+.pytest_cache/
+test-reports/
+
+# Deployment artifacts
+*.tar.gz
+*.zip
+docker-compose.override.yml
+kubernetes/secrets.yaml
+
+# IDE and editor files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Temporary files
+*.tmp
+*.temp
+
+# Terraform files
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+*.tfplan
+*.tfplan.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+terraform.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform provider cache
+.terraform.d/
