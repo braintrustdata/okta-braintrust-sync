@@ -895,7 +895,7 @@ async def _check_groups_async(
     okta_client, braintrust_clients = await _initialize_clients(config)
     
     # Initialize state manager
-    state_manager = StateManager(base_dir=Path("./state"))
+    state_manager = StateManager(state_dir=Path("./state"))
     
     # Initialize user syncer with group assignment enabled
     from sync.resources.users import UserSyncer
