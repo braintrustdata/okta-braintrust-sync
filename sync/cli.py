@@ -892,7 +892,7 @@ async def _check_groups_async(
 ) -> None:
     """Run group assignment check asynchronously."""
     # Initialize clients
-    okta_client, braintrust_clients = await _init_clients(config)
+    okta_client, braintrust_clients = await _initialize_clients(config)
     
     # Initialize state manager
     state_manager = StateManager(base_dir=Path("./state"))
