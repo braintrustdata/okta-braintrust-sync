@@ -9,6 +9,7 @@ from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient, OktaUser
 from sync.core.state import StateManager
 from sync.resources.base import BaseResourceSyncer
+from sync.resources.user_group_assignment import UserGroupAssignmentManager
 
 logger = structlog.get_logger(__name__)
 
@@ -23,6 +24,7 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
         state_manager: StateManager,
         identity_mapping_strategy: str = "email",
         custom_field_mappings: Optional[Dict[str, str]] = None,
+        enable_auto_group_assignment: bool = True,
     ) -> None:
         """Initialize user syncer.
         
@@ -32,15 +34,27 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             state_manager: State manager for tracking sync operations
             identity_mapping_strategy: How to map user identities ("email", "custom_field", "mapping_file")
             custom_field_mappings: Custom field mappings for user attributes
+            enable_auto_group_assignment: Whether to automatically assign groups based on Okta data
         """
         super().__init__(okta_client, braintrust_clients, state_manager)
         
         self.identity_mapping_strategy = identity_mapping_strategy
         self.custom_field_mappings = custom_field_mappings or {}
+        self.enable_auto_group_assignment = enable_auto_group_assignment
+        
+        # Initialize group assignment manager if enabled
+        self.group_assignment_manager = None
+        if enable_auto_group_assignment:
+            self.group_assignment_manager = UserGroupAssignmentManager(
+                okta_client=okta_client,
+                braintrust_clients=braintrust_clients,
+                state_manager=state_manager,
+            )
         
         self._logger = logger.bind(
             syncer_type="UserSyncer",
             identity_strategy=identity_mapping_strategy,
+            auto_group_assignment=enable_auto_group_assignment,
         )
     
     @property
@@ -164,6 +178,18 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             # Get group names if specified in additional data
             group_names = additional_data.get("group_names") if additional_data else None
             
+            # If auto group assignment is enabled and no groups specified, determine groups
+            if self.enable_auto_group_assignment and self.group_assignment_manager and not group_names:
+                group_names = await self.group_assignment_manager.assign_groups_on_sync(
+                    okta_user=okta_resource,
+                    braintrust_org=braintrust_org,
+                )
+                self._logger.debug(
+                    "Auto-determined groups for user",
+                    email=user_data.get("email"),
+                    groups=group_names,
+                )
+            
             # Get user ID safely
             okta_user_id = (
                 okta_resource.get("id") if isinstance(okta_resource, dict)
@@ -176,6 +202,7 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                 email=user_data.get("email"),
                 braintrust_org=braintrust_org,
                 groups=group_names or [],
+                auto_assigned=self.enable_auto_group_assignment and not additional_data.get("group_names"),
             )
             
             # Use invitation API instead of direct user creation
@@ -233,6 +260,9 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
     ) -> BraintrustUser:
         """Update an existing user in Braintrust.
         
+        Note: This method should never be called since calculate_updates() always
+        returns empty dict. This is a safety check.
+        
         Args:
             braintrust_resource_id: Braintrust user ID
             okta_resource: Source Okta user
@@ -241,42 +271,29 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             
         Returns:
             Updated Braintrust user
+            
+        Raises:
+            NotImplementedError: Braintrust API doesn't support user updates
         """
-        if braintrust_org not in self.braintrust_clients:
-            raise ValueError(f"No Braintrust client configured for org: {braintrust_org}")
+        # Get user ID safely
+        okta_user_id = (
+            okta_resource.get("id") if isinstance(okta_resource, dict)
+            else okta_resource.id
+        )
         
-        try:
-            client = self.braintrust_clients[braintrust_org]
-            
-            self._logger.debug(
-                "Updating Braintrust user",
-                braintrust_user_id=braintrust_resource_id,
-                okta_user_id=okta_resource.id,
-                updates=list(updates.keys()),
-                braintrust_org=braintrust_org,
-            )
-            
-            braintrust_user = await client.update_user(braintrust_resource_id, updates)
-            
-            self._logger.info(
-                "Updated Braintrust user",
-                braintrust_user_id=braintrust_resource_id,
-                okta_user_id=okta_resource.id,
-                updated_fields=list(updates.keys()),
-                braintrust_org=braintrust_org,
-            )
-            
-            return braintrust_user
-            
-        except Exception as e:
-            self._logger.error(
-                "Failed to update Braintrust user",
-                braintrust_user_id=braintrust_resource_id,
-                okta_user_id=okta_resource.id,
-                braintrust_org=braintrust_org,
-                error=str(e),
-            )
-            raise
+        self._logger.error(
+            "User update attempted but not supported",
+            braintrust_user_id=braintrust_resource_id,
+            okta_user_id=okta_user_id,
+            braintrust_org=braintrust_org,
+            updates=list(updates.keys()),
+            note="Braintrust API doesn't support user updates"
+        )
+        
+        raise NotImplementedError(
+            "Braintrust API doesn't support user updates. "
+            "This method should not be called due to calculate_updates() returning empty dict."
+        )
     
     def get_resource_identifier(self, resource: OktaUser) -> str:
         """Get unique identifier for an Okta user.
@@ -482,86 +499,39 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
     ) -> Dict[str, Any]:
         """Calculate what updates are needed for a Braintrust user.
         
+        Note: Braintrust API doesn't support user updates, so this always returns
+        empty dict to force SKIP action instead of UPDATE action.
+        
         Args:
             okta_resource: Source Okta user
             braintrust_resource: Existing Braintrust user
             
         Returns:
-            Dictionary of fields that need updating
+            Empty dictionary (no updates supported)
         """
-        updates = {}
+        # Get user ID safely for logging
+        okta_user_id = (
+            okta_resource.get("id") if isinstance(okta_resource, dict)
+            else okta_resource.id
+        )
         
-        try:
-            # Extract current Okta user data
-            okta_data = self._extract_user_data(okta_resource)
-            
-            # Handle both dict and object formats for Braintrust resource
-            def get_braintrust_field(field_name: str) -> str:
-                if isinstance(braintrust_resource, dict):
-                    return braintrust_resource.get(field_name, "")
-                else:
-                    return getattr(braintrust_resource, field_name, "")
-            
-            # Compare first name
-            if okta_data["given_name"] != get_braintrust_field("given_name"):
-                updates["given_name"] = okta_data["given_name"]
-            
-            # Compare last name
-            if okta_data["family_name"] != get_braintrust_field("family_name"):
-                updates["family_name"] = okta_data["family_name"]
-            
-            # Compare email (usually shouldn't change, but handle it)
-            if okta_data["email"] != get_braintrust_field("email"):
-                updates["email"] = okta_data["email"]
-            
-            # Handle custom field mappings
-            if self.custom_field_mappings:
-                for okta_field, braintrust_field in self.custom_field_mappings.items():
-                    if okta_field in ["given_name", "family_name", "email"]:
-                        continue  # Already handled above
-                    
-                    # Handle both dict and object formats
-                    if isinstance(okta_resource, dict):
-                        profile = okta_resource.get("profile", {})
-                        okta_value = profile.get(okta_field)
-                    else:
-                        okta_value = okta_resource.profile.get(okta_field)
-                    braintrust_value = get_braintrust_field(braintrust_field)
-                    
-                    if okta_value != braintrust_value:
-                        updates[braintrust_field] = okta_value
-            
-            # Get user ID safely
-            okta_user_id = (
-                okta_resource.get("id") if isinstance(okta_resource, dict)
-                else okta_resource.id
-            )
-            
-            self._logger.debug(
-                "Calculated user updates",
-                okta_user_id=okta_user_id,
-                braintrust_user_id=get_braintrust_field("id") or "unknown",
-                updates=list(updates.keys()),
-            )
-            
-            return updates
-            
-        except Exception as e:
-            okta_user_id = (
-                okta_resource.get("id") if isinstance(okta_resource, dict)
-                else okta_resource.id
-            )
-            self._logger.error(
-                "Failed to calculate user updates",
-                okta_user_id=okta_user_id,
-                braintrust_user_id=(
-                    braintrust_resource.get("id", "unknown") 
-                    if isinstance(braintrust_resource, dict) 
-                    else getattr(braintrust_resource, "id", "unknown")
-                ),
-                error=str(e),
-            )
-            return {}
+        def get_braintrust_field(field_name: str) -> str:
+            if isinstance(braintrust_resource, dict):
+                return braintrust_resource.get(field_name, "")
+            else:
+                return getattr(braintrust_resource, field_name, "")
+        
+        self._logger.debug(
+            "Calculated user updates",
+            okta_user_id=okta_user_id,
+            braintrust_user_id=get_braintrust_field("id") or "unknown",
+            updates=[], # Always empty due to API limitations
+            note="User updates disabled - Braintrust API doesn't support user updates"
+        )
+        
+        # Always return empty dict to prevent UPDATE actions
+        # This forces the base class to generate SKIP actions for existing users
+        return {}
     
     def _extract_user_data(self, okta_user: OktaUser) -> Dict[str, Any]:
         """Extract user data from Okta user for Braintrust creation/update.
@@ -717,3 +687,32 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                 error=str(e),
             )
             return None
+    
+    async def check_and_assign_groups_for_accepted_invitations(
+        self,
+        braintrust_org: str,
+        check_window_hours: int = 24,
+    ) -> Dict[str, Any]:
+        """Check for accepted invitations and assign users to groups.
+        
+        This method is a convenience wrapper around the group assignment manager.
+        
+        Args:
+            braintrust_org: Braintrust organization to check
+            check_window_hours: Only check invitations sent within this time window
+            
+        Returns:
+            Dictionary with assignment results
+        """
+        if not self.enable_auto_group_assignment or not self.group_assignment_manager:
+            return {
+                "error": "Auto group assignment is not enabled",
+                "checked_users": 0,
+                "accepted_users": 0,
+                "assigned_users": 0,
+            }
+        
+        return await self.group_assignment_manager.check_and_assign_groups(
+            braintrust_org=braintrust_org,
+            check_window_hours=check_window_hours,
+        )

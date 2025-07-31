@@ -33,6 +33,10 @@ Instead of manually creating Braintrust accounts for each team member and managi
   - Can assign users to groups during invitation process
   - No manual invitation step required - fully automated end-to-end
   - Supports user removal from organizations when filtered out of sync
+- ✅ **Automatic group assignment**: Intelligently assigns users to groups based on Okta attributes
+  - Assigns groups during initial invitation based on department, role, location, and Okta groups
+  - Post-acceptance group assignment with `check-groups` command
+  - Customizable group mapping logic
 
 **🚧 Current Limitations:**
 - ❌ **Real-time webhooks**: Not yet implemented (commands exist but return "not implemented")
@@ -79,7 +83,7 @@ cd braintrust-migrate
 # Create virtual environment and install
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -e .
+uv pip install -e .
 ```
 
 ### 2. Set Up API Credentials
@@ -154,6 +158,60 @@ okta-braintrust-sync plan --config sync-config.yaml
 
 # Execute the sync
 okta-braintrust-sync apply --config sync-config.yaml --auto-approve
+```
+
+## Automatic Group Assignment
+
+The tool now supports automatic group assignment for users based on their Okta attributes:
+
+### How It Works
+
+1. **During Initial Invitation**: When users are invited to Braintrust, the tool automatically determines appropriate groups based on:
+   - Department (e.g., Engineering → "Engineering Team")
+   - Job title/role (e.g., Manager → "Managers")
+   - Location (e.g., SF → "Location - SF")
+   - Okta group memberships (synced with "Okta - " prefix)
+
+2. **Post-Acceptance Assignment**: For users who were invited without group assignment or need group updates:
+   ```bash
+   # Check all organizations for accepted invitations
+   okta-braintrust-sync check-groups --config sync-config.yaml
+   
+   # Check specific organization
+   okta-braintrust-sync check-groups --config sync-config.yaml --org prod
+   
+   # Check invitations from last 48 hours
+   okta-braintrust-sync check-groups --config sync-config.yaml --hours 48
+   ```
+
+### Customizing Group Assignment Logic
+
+Edit `sync/resources/user_group_assignment.py` to customize the `_determine_user_groups` method:
+
+```python
+# Example: Add custom department mapping
+dept_group_mapping = {
+    'engineering': 'Engineering Team',
+    'product': 'Product Team',
+    'sales': 'Sales Team',
+    'marketing': 'Marketing Team',
+    'finance': 'Finance Team',  # Add new departments
+}
+
+# Example: Add role-based groups
+if 'senior' in title:
+    groups.append('Senior Staff')
+if 'director' in title or 'vp' in title:
+    groups.append('Leadership')
+```
+
+### Scheduling Group Assignment Checks
+
+Set up a cron job to regularly check for accepted invitations:
+
+```bash
+# Check every hour for newly accepted invitations
+0 * * * * /path/to/venv/bin/okta-braintrust-sync check-groups --config /path/to/sync-config.yaml --hours 2
 ```
 
 ## Common Team Onboarding Scenarios
@@ -336,6 +394,14 @@ okta-braintrust-sync apply --config sync-config.yaml \
 ```bash
 # Display basic configuration summary (state display functionality is limited)
 okta-braintrust-sync show --config sync-config.yaml
+
+# Check for accepted invitations and assign groups
+okta-braintrust-sync check-groups --config sync-config.yaml
+
+# Check specific organization with custom time window
+okta-braintrust-sync check-groups --config sync-config.yaml \
+  --org prod \
+  --hours 48
 ```
 
 ### Webhook Commands (Not Yet Implemented)
@@ -536,6 +602,10 @@ okta-braintrust-sync show --config sync-config.yaml
 # Plan & Apply Changes
 okta-braintrust-sync plan --config sync-config.yaml
 okta-braintrust-sync apply --config sync-config.yaml --auto-approve
+
+# Check & Assign Groups
+okta-braintrust-sync check-groups --config sync-config.yaml
+okta-braintrust-sync check-groups --config sync-config.yaml --org prod --hours 48
 
 # Dry Run Testing
 okta-braintrust-sync apply --config sync-config.yaml --dry-run

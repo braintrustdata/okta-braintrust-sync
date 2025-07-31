@@ -813,5 +813,165 @@ def _display_execution_results(progress: ExecutionProgress, dry_run: bool):
     console.print(f"\n{status_msg}")
 
 
+@app.command()
+def check_groups(
+    config: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
+    organization: Optional[str] = typer.Option(
+        None,
+        "--org",
+        "-o",
+        help="Target Braintrust organization (if not specified, checks all)",
+    ),
+    hours: int = typer.Option(
+        24,
+        "--hours",
+        "-h",
+        help="Check invitations sent within this many hours",
+    ),
+    auto_apply: bool = typer.Option(
+        False,
+        "--auto-apply",
+        help="Automatically apply group assignments without confirmation",
+    ),
+) -> None:
+    """Check for accepted invitations and assign users to their appropriate groups.
+    
+    This command will:
+    1. Check for users who have accepted their Braintrust invitations
+    2. Determine which groups they should be in based on their Okta attributes
+    3. Add them to those groups in Braintrust
+    """
+    # Find config file if not provided
+    if config is None:
+        config = find_config_file()
+        if config is None:
+            console.print("[red]Error: No configuration file found[/red]")
+            console.print("Please create a configuration file or specify one with --config")
+            raise typer.Exit(1)
+    
+    # Load configuration
+    loader = ConfigLoader()
+    try:
+        sync_config = loader.load_config(config)
+    except Exception as e:
+        console.print(f"[red]Error loading configuration: {e}[/red]")
+        raise typer.Exit(1)
+    
+    # Determine which organizations to check
+    target_orgs = []
+    if organization:
+        if organization not in sync_config.braintrust_orgs:
+            console.print(f"[red]Error: Organization '{organization}' not found in configuration[/red]")
+            console.print(f"Available organizations: {', '.join(sync_config.braintrust_orgs.keys())}")
+            raise typer.Exit(1)
+        target_orgs = [organization]
+    else:
+        target_orgs = list(sync_config.braintrust_orgs.keys())
+    
+    console.print(f"[bold]Checking for accepted invitations and assigning groups[/bold]")
+    console.print(f"Organizations: [cyan]{', '.join(target_orgs)}[/cyan]")
+    console.print(f"Time window: [yellow]{hours} hours[/yellow]")
+    
+    # Run the check asynchronously
+    asyncio.run(_check_groups_async(sync_config, target_orgs, hours, auto_apply))
+
+
+async def _check_groups_async(
+    config: SyncConfig,
+    target_orgs: List[str],
+    hours: int,
+    auto_apply: bool,
+) -> None:
+    """Run group assignment check asynchronously."""
+    # Initialize clients
+    okta_client, braintrust_clients = await _init_clients(config)
+    
+    # Initialize state manager
+    state_manager = StateManager(base_dir=Path("./state"))
+    
+    # Initialize user syncer with group assignment enabled
+    from sync.resources.users import UserSyncer
+    user_syncer = UserSyncer(
+        okta_client=okta_client,
+        braintrust_clients=braintrust_clients,
+        state_manager=state_manager,
+        enable_auto_group_assignment=True,
+    )
+    
+    overall_results = {
+        "total_checked": 0,
+        "total_accepted": 0,
+        "total_assigned": 0,
+        "errors": [],
+    }
+    
+    # Check each organization
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        for org in target_orgs:
+            task = progress.add_task(f"Checking {org}...", total=1)
+            
+            try:
+                results = await user_syncer.check_and_assign_groups_for_accepted_invitations(
+                    braintrust_org=org,
+                    check_window_hours=hours,
+                )
+                
+                overall_results["total_checked"] += results.get("checked_users", 0)
+                overall_results["total_accepted"] += results.get("accepted_users", 0)
+                overall_results["total_assigned"] += results.get("assigned_users", 0)
+                overall_results["errors"].extend(results.get("errors", []))
+                
+                # Display org results
+                console.print(f"\n[bold]{org}:[/bold]")
+                console.print(f"  Checked: [cyan]{results.get('checked_users', 0)}[/cyan]")
+                console.print(f"  Accepted: [green]{results.get('accepted_users', 0)}[/green]")
+                console.print(f"  Assigned to groups: [yellow]{results.get('assigned_users', 0)}[/yellow]")
+                
+                if results.get("errors"):
+                    console.print(f"  [red]Errors: {len(results['errors'])}[/red]")
+                
+            except Exception as e:
+                console.print(f"[red]Error checking {org}: {e}[/red]")
+                overall_results["errors"].append(f"{org}: {e}")
+            
+            progress.update(task, completed=1)
+    
+    # Display overall summary
+    console.print("\n[bold]Overall Summary:[/bold]")
+    results_table = Table()
+    results_table.add_column("Metric", style="cyan")
+    results_table.add_column("Count", justify="right", style="green")
+    
+    results_table.add_row("Invitations Checked", str(overall_results["total_checked"]))
+    results_table.add_row("Users Accepted", str(overall_results["total_accepted"]))
+    results_table.add_row("Users Assigned to Groups", str(overall_results["total_assigned"]))
+    
+    console.print(results_table)
+    
+    if overall_results["errors"]:
+        console.print(f"\n[red]Errors encountered ({len(overall_results['errors'])}):[/red]")
+        for error in overall_results["errors"][:5]:
+            console.print(f"  • {error}")
+        if len(overall_results["errors"]) > 5:
+            console.print(f"  ... and {len(overall_results['errors']) - 5} more")
+    
+    # Clean up
+    await okta_client.close()
+    for client in braintrust_clients.values():
+        await client.close()
+
+
 if __name__ == "__main__":
     app()
