@@ -63,55 +63,36 @@ class UserGroupAssignmentManager:
         }
         
         try:
-            # Get recent invitation operations from state
-            cutoff_time = datetime.utcnow() - timedelta(hours=check_window_hours)
-            pending_invitations = await self._get_pending_invitations(braintrust_org, cutoff_time)
+            # Get current users in the organization
+            current_users = await client.list_users()
             
-            if not pending_invitations:
+            if not current_users:
                 self._logger.info(
-                    "No pending invitations to check",
+                    "No users found in Braintrust organization",
                     braintrust_org=braintrust_org,
                 )
                 return results
             
-            results["checked_users"] = len(pending_invitations)
+            results["checked_users"] = len(current_users)
             
-            # Get current users in the organization
-            current_users = await client.list_users()
-            current_user_emails = {
-                user.email if hasattr(user, 'email') else user.get('email', '')
-                for user in current_users
-            }
-            
-            # Check each pending invitation
-            for invitation in pending_invitations:
-                user_email = invitation.get("email")
+            # Check each current user for group assignment needs
+            for bt_user in current_users:
+                user_email = bt_user.email if hasattr(bt_user, 'email') else bt_user.get('email', '')
                 if not user_email:
                     continue
                 
-                # Check if user has accepted (appears in user list)
-                if user_email in current_user_emails:
-                    results["accepted_users"] += 1
-                    
-                    # Find the user in Braintrust
-                    bt_user = await client.find_user_by_email(user_email)
-                    if bt_user:
-                        # Assign to groups based on Okta data
-                        assigned = await self._assign_user_to_groups(
-                            user_email=user_email,
-                            bt_user=bt_user,
-                            braintrust_org=braintrust_org,
-                            invitation_data=invitation,
-                        )
-                        if assigned:
-                            results["assigned_users"] += 1
-                        
-                        # Update state to mark invitation as accepted
-                        await self._update_invitation_status(
-                            invitation_id=invitation.get("id"),
-                            status="accepted",
-                            accepted_at=datetime.utcnow(),
-                        )
+                # This user has accepted (they're in Braintrust)
+                results["accepted_users"] += 1
+                
+                # Check if they need group assignments
+                assigned = await self._assign_user_to_groups(
+                    user_email=user_email,
+                    bt_user=bt_user,
+                    braintrust_org=braintrust_org,
+                    invitation_data={},  # No invitation data available without state tracking
+                )
+                if assigned:
+                    results["assigned_users"] += 1
             
             self._logger.info(
                 "Group assignment check completed",
@@ -180,6 +161,14 @@ class UserGroupAssignmentManager:
             
             # Determine which groups the user should be in
             target_groups = await self._determine_user_groups(okta_user, braintrust_org)
+            
+            self._logger.debug(
+                "Determined target groups for user",
+                email=user_email,
+                target_groups=target_groups,
+                braintrust_org=braintrust_org,
+            )
+            
             if not target_groups:
                 self._logger.info(
                     "No groups to assign for user",
