@@ -474,14 +474,14 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
         plan_items = []
         
         try:
-            # Get current Braintrust resources
-            braintrust_resources = await self.get_braintrust_resources(braintrust_org)
-            
             # Get state mappings to identify resources managed by this sync tool
             managed_resources = self._get_managed_resources(braintrust_org)
             
+            if not managed_resources:
+                # No managed resources, nothing to delete
+                return []
+            
             # Create sets of Okta resource identifiers for quick lookup
-            # Use the same identifier method as regular sync planning
             okta_resource_identifiers = set()
             for okta_resource in okta_resources:
                 resource_identifier = self.get_resource_identifier(okta_resource)
@@ -489,31 +489,14 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                     okta_resource_identifiers.add(resource_identifier)
             
             self._logger.debug(
-                "Checking for resources to delete",
+                "Checking managed resources for deletion",
                 braintrust_org=braintrust_org,
                 okta_resources=len(okta_resource_identifiers),
-                braintrust_resources=len(braintrust_resources),
                 managed_resources=len(managed_resources),
             )
             
-            # Check each Braintrust resource
-            for bt_resource in braintrust_resources:
-                bt_resource_id = self._get_braintrust_resource_id(bt_resource)
-                if not bt_resource_id:
-                    continue
-                
-                # Only consider deletion if this resource was created by our sync tool
-                if bt_resource_id not in managed_resources:
-                    self._logger.debug(
-                        "Skipping unmanaged resource",
-                        resource_id=bt_resource_id,
-                        braintrust_org=braintrust_org,
-                    )
-                    continue
-                
-                # Get the corresponding Okta identifier for this Braintrust resource
-                okta_identifier = managed_resources[bt_resource_id]
-                
+            # Check each managed resource to see if it should be deleted
+            for bt_resource_id, okta_identifier in managed_resources.items():
                 # If the Okta resource no longer exists, plan for deletion
                 if okta_identifier not in okta_resource_identifiers:
                     plan_items.append(SyncPlanItem(
