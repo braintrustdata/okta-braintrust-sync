@@ -401,23 +401,35 @@ class BraintrustClient:
             # Get current group to merge members
             current_group = await self.get_group(group_id)
             
-            # Merge current and new members
-            current_users = set(getattr(current_group, 'member_users', []) or [])
-            current_groups = set(getattr(current_group, 'member_groups', []) or [])
+            # Get current members as lists
+            current_users = list(getattr(current_group, 'member_users', []) or [])
+            current_groups = list(getattr(current_group, 'member_groups', []) or [])
             
+            # Add new members to existing ones (avoid duplicates)
             if user_ids:
-                current_users.update(user_ids)
+                for user_id in user_ids:
+                    if user_id not in current_users:
+                        current_users.append(user_id)
             if group_ids:
-                current_groups.update(group_ids)
+                for group_id_to_add in group_ids:
+                    if group_id_to_add not in current_groups:
+                        current_groups.append(group_id_to_add)
             
-            # Update group with merged membership
-            updates = {}
-            if current_users:
-                updates['member_users'] = list(current_users)
-            if current_groups:
-                updates['member_groups'] = list(current_groups)
-            
-            return await self.update_group(group_id, updates)
+            # Use replace to set the complete membership
+            self._request_count += 1
+            group = self.client.groups.replace(
+                name=current_group.name,
+                description=getattr(current_group, 'description', None),
+                member_users=current_users,
+                member_groups=current_groups,
+            )
+            self._logger.info(
+                "Updated group membership using replace",
+                group_id=group.id,
+                total_users=len(current_users),
+                total_groups=len(current_groups),
+            )
+            return group
             
         except Exception as e:
             self._error_count += 1

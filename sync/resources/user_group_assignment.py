@@ -63,36 +63,53 @@ class UserGroupAssignmentManager:
         }
         
         try:
-            # Get current users in the organization
-            current_users = await client.list_users()
+            # Get active users from Okta that should be in this Braintrust org
+            # This focuses on users we expect to manage, not all Braintrust users
+            okta_active_users = await self.okta_client.search_users('status eq "ACTIVE"')
             
-            if not current_users:
+            if not okta_active_users:
                 self._logger.info(
-                    "No users found in Braintrust organization",
+                    "No active users found in Okta",
                     braintrust_org=braintrust_org,
                 )
                 return results
             
-            results["checked_users"] = len(current_users)
+            results["checked_users"] = len(okta_active_users)
             
-            # Check each current user for group assignment needs
-            for bt_user in current_users:
-                user_email = bt_user.email if hasattr(bt_user, 'email') else bt_user.get('email', '')
+            # Check each Okta user to see if they're in Braintrust and need group assignments
+            for okta_user in okta_active_users:
+                user_email = self._get_user_email(okta_user)
                 if not user_email:
                     continue
                 
-                # This user has accepted (they're in Braintrust)
-                results["accepted_users"] += 1
-                
-                # Check if they need group assignments
-                assigned = await self._assign_user_to_groups(
-                    user_email=user_email,
-                    bt_user=bt_user,
-                    braintrust_org=braintrust_org,
-                    invitation_data={},  # No invitation data available without state tracking
-                )
-                if assigned:
-                    results["assigned_users"] += 1
+                # Check if this user exists in Braintrust (meaning they accepted)
+                bt_user = await client.find_user_by_email(user_email)
+                if bt_user:
+                    # This user has accepted (they're in Braintrust)
+                    results["accepted_users"] += 1
+                    
+                    self._logger.debug(
+                        "Found accepted user in Braintrust",
+                        email=user_email,
+                        braintrust_org=braintrust_org,
+                    )
+                    
+                    # Check if they need group assignments
+                    assigned = await self._assign_user_to_groups(
+                        user_email=user_email,
+                        bt_user=bt_user,
+                        braintrust_org=braintrust_org,
+                        invitation_data={},  # No invitation data available without state tracking
+                        okta_user=okta_user,  # Pass the Okta user data
+                    )
+                    if assigned:
+                        results["assigned_users"] += 1
+                else:
+                    self._logger.debug(
+                        "Okta user not found in Braintrust (invitation not accepted yet)",
+                        email=user_email,
+                        braintrust_org=braintrust_org,
+                    )
             
             self._logger.info(
                 "Group assignment check completed",
@@ -129,12 +146,59 @@ class UserGroupAssignmentManager:
         # TODO: Implement state query for pending invitations
         return []
     
+    def _get_user_email(self, okta_user: OktaUser) -> str:
+        """Get email from Okta user object."""
+        if hasattr(okta_user, 'profile'):
+            return okta_user.profile.get('email', '') if isinstance(okta_user.profile, dict) else ''
+        elif isinstance(okta_user, dict):
+            return okta_user.get('profile', {}).get('email', '')
+        return ''
+    
+    def _get_group_mappings_from_state(self, braintrust_org: str) -> Dict[str, str]:
+        """Get mapping of Okta group IDs to Braintrust group names from state.
+        
+        Args:
+            braintrust_org: Braintrust organization name
+            
+        Returns:
+            Dictionary mapping Okta group ID -> Braintrust group name
+        """
+        mappings = {}
+        
+        # Load persistent mappings from state
+        try:
+            persistent_mappings = self.state_manager._load_persistent_mappings()
+            
+            for mapping_key, mapping in persistent_mappings.items():
+                if (mapping.resource_type == "group" and 
+                    mapping.braintrust_org == braintrust_org):
+                    # The mapping_key has format "GroupName:org:group", extract just the group name
+                    group_name = mapping_key.split(':')[0] if ':' in mapping_key else mapping_key
+                    mappings[mapping.okta_id] = group_name
+            
+            self._logger.debug(
+                "Loaded group mappings from state",
+                braintrust_org=braintrust_org,
+                mapping_count=len(mappings),
+                mappings=mappings,
+            )
+            
+        except Exception as e:
+            self._logger.warning(
+                "Could not load group mappings from state",
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+        
+        return mappings
+    
     async def _assign_user_to_groups(
         self,
         user_email: str,
         bt_user: BraintrustUser,
         braintrust_org: str,
         invitation_data: Dict[str, Any],
+        okta_user: Optional[OktaUser] = None,
     ) -> bool:
         """Assign user to appropriate groups based on Okta data.
         
@@ -151,13 +215,14 @@ class UserGroupAssignmentManager:
             client = self.braintrust_clients[braintrust_org]
             
             # Get user's Okta data to determine groups
-            okta_user = await self._get_okta_user_by_email(user_email)
-            if not okta_user:
-                self._logger.warning(
-                    "Could not find Okta user for group assignment",
-                    email=user_email,
-                )
-                return False
+            if okta_user is None:
+                okta_user = await self._get_okta_user_by_email(user_email)
+                if not okta_user:
+                    self._logger.warning(
+                        "Could not find Okta user for group assignment",
+                        email=user_email,
+                    )
+                    return False
             
             # Determine which groups the user should be in
             target_groups = await self._determine_user_groups(okta_user, braintrust_org)
@@ -283,20 +348,59 @@ class UserGroupAssignmentManager:
         if location:
             groups.append(f"Location - {location.title()}")
         
-        # 4. Get Okta groups for user
+        # 4. Get Okta groups for user and map to Braintrust groups using state
         try:
             okta_groups = await self.okta_client.get_user_groups(
                 okta_user.id if hasattr(okta_user, 'id') else okta_user.get('id')
             )
+            
+            # Get group mappings from state to find corresponding Braintrust group names
+            okta_to_braintrust_groups = self._get_group_mappings_from_state(braintrust_org)
+            
             for okta_group in okta_groups:
-                group_name = (
-                    okta_group.profile.name 
-                    if hasattr(okta_group, 'profile') 
-                    else okta_group.get('profile', {}).get('name')
+                # Get Okta group ID and name for debugging
+                okta_group_id = okta_group.id if hasattr(okta_group, 'id') else okta_group.get('id')
+                okta_group_name = None
+                if hasattr(okta_group, 'profile'):
+                    group_profile = okta_group.profile
+                    if hasattr(group_profile, 'name'):
+                        okta_group_name = group_profile.name
+                    else:
+                        okta_group_name = group_profile.get('name') if isinstance(group_profile, dict) else None
+                else:
+                    okta_group_name = okta_group.get('profile', {}).get('name') if isinstance(okta_group, dict) else None
+                
+                self._logger.debug(
+                    "Processing Okta group",
+                    okta_group_id=okta_group_id,
+                    okta_group_name=okta_group_name,
+                    available_mappings=list(okta_to_braintrust_groups.keys()),
                 )
-                if group_name:
-                    # Add Okta group names directly or with prefix
-                    groups.append(f"Okta - {group_name}")
+                
+                # Try matching by group ID first
+                if okta_group_id in okta_to_braintrust_groups:
+                    braintrust_group_name = okta_to_braintrust_groups[okta_group_id]
+                    groups.append(braintrust_group_name)
+                    self._logger.debug(
+                        "Matched by group ID",
+                        okta_group_id=okta_group_id,
+                        braintrust_group_name=braintrust_group_name,
+                    )
+                # Try matching by group name as fallback
+                elif okta_group_name and okta_group_name in okta_to_braintrust_groups:
+                    braintrust_group_name = okta_to_braintrust_groups[okta_group_name]
+                    groups.append(braintrust_group_name)
+                    self._logger.debug(
+                        "Matched by group name",
+                        okta_group_name=okta_group_name,
+                        braintrust_group_name=braintrust_group_name,
+                    )
+                else:
+                    self._logger.debug(
+                        "No mapping found for Okta group",
+                        okta_group_id=okta_group_id,
+                        okta_group_name=okta_group_name,
+                    )
         except Exception as e:
             self._logger.warning(
                 "Could not get Okta groups for user",
