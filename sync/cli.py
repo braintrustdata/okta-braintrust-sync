@@ -643,8 +643,129 @@ def _display_sync_plan(plan):
             console.print(f"  • {warning}")
     
     # Display detailed plan items if not too many
-    if plan.total_items <= 20:
+    if plan.total_items <= 50:
         _display_detailed_plan_items(plan)
+    else:
+        console.print(f"\n[dim]Plan contains {plan.total_items} items. Only showing summary.[/dim]")
+
+
+def _display_grouped_items(items, title: str):
+    """Display sync plan items in a detailed table.
+    
+    Args:
+        items: List of sync plan items
+        title: Table title
+    """
+    if not items:
+        return
+    
+    table = Table(title=title)
+    table.add_column("Action", style="cyan", width=8)
+    table.add_column("Resource ID", style="green")
+    table.add_column("Organization", style="blue")
+    table.add_column("Changes", style="dim", width=50)
+    
+    # Sort items by action for better display
+    action_order = {"CREATE": 1, "UPDATE": 2, "DELETE": 3, "SKIP": 4}
+    sorted_items = sorted(items, key=lambda x: action_order.get(x.action.value if hasattr(x.action, 'value') else str(x.action), 5))
+    
+    # Action colors
+    action_colors = {
+        "CREATE": "[green]CREATE[/green]",
+        "UPDATE": "[yellow]UPDATE[/yellow]", 
+        "DELETE": "[red]DELETE[/red]",
+        "SKIP": "[dim]SKIP[/dim]",
+    }
+    
+    for item in sorted_items:
+        action_str = item.action.value if hasattr(item.action, 'value') else str(item.action)
+        colored_action = action_colors.get(action_str, action_str)
+        
+        # Show detailed changes like Terraform
+        changes_display = _format_terraform_style_changes(item)
+        
+        table.add_row(
+            colored_action,
+            item.okta_resource_id,
+            item.braintrust_org,
+            changes_display,
+        )
+    
+    console.print(table)
+
+
+def _format_terraform_style_changes(item) -> str:
+    """Format changes in Terraform-style diff format.
+    
+    Args:
+        item: SyncPlanItem with action and proposed changes
+        
+    Returns:
+        Formatted changes string showing before/after like Terraform
+    """
+    if item.action.value == "SKIP" or (hasattr(item.action, 'name') and item.action.name == "SKIP"):
+        return "No changes needed"
+    
+    if item.action.value == "DELETE" or (hasattr(item.action, 'name') and item.action.name == "DELETE"):
+        return "[red]Will be deleted[/red]"
+    
+    if item.action.value == "CREATE" or (hasattr(item.action, 'name') and item.action.name == "CREATE"):
+        return "[green]Will be created[/green]"
+    
+    # For UPDATE actions, show the actual changes
+    if not item.proposed_changes:
+        return "No specific changes listed"
+    
+    changes = []
+    for field, new_value in item.proposed_changes.items():
+        if field == "member_users":
+            if isinstance(new_value, list):
+                if len(new_value) == 0:
+                    changes.append("[dim]member_users = [][/dim] (empty)")
+                elif len(new_value) <= 3:
+                    members_str = ", ".join(new_value)
+                    changes.append(f"[dim]member_users = [[/dim][green]{members_str}[/green][dim]][/dim]")
+                else:
+                    members_preview = ", ".join(new_value[:3])
+                    changes.append(f"[dim]member_users = [[/dim][green]{members_preview}[/green][dim], ... +{len(new_value)-3} more][/dim]")
+            else:
+                changes.append(f"[dim]member_users = [/dim][green]{new_value}[/green]")
+        elif field == "member_groups":
+            if isinstance(new_value, list):
+                if len(new_value) == 0:
+                    changes.append("[dim]member_groups = [][/dim] (empty)")
+                else:
+                    groups_str = ", ".join(new_value)
+                    changes.append(f"[dim]member_groups = [[/dim][green]{groups_str}[/green][dim]][/dim]")
+            else:
+                changes.append(f"[dim]member_groups = [/dim][green]{new_value}[/green]")
+        else:
+            changes.append(f"[dim]{field} = [/dim][green]{new_value}[/green]")
+    
+    return "\n".join(changes)
+
+
+def _improve_reason_description(reason: str) -> str:
+    """Improve reason descriptions to be more user-friendly.
+    
+    Args:
+        reason: Original reason string
+        
+    Returns:
+        Improved reason description
+    """
+    # Replace technical terms with user-friendly descriptions
+    improvements = {
+        "member_users": "group membership",
+        "Updates needed: member_users": "Group membership needs updating",
+        "Resource exists in Braintrust but not in Okta (managed by sync tool)": "Resource deleted from Okta - will be removed",
+    }
+    
+    for old, new in improvements.items():
+        if old in reason:
+            reason = reason.replace(old, new)
+    
+    return reason
 
 
 def _display_detailed_plan_items(plan):
@@ -653,69 +774,13 @@ def _display_detailed_plan_items(plan):
     Args:
         plan: SyncPlan object with items to display
     """
-    # Display user items
+    # Display user items grouped by action
     if plan.user_items:
-        user_table = Table(title="User Sync Items")
-        user_table.add_column("Action", style="cyan")
-        user_table.add_column("Okta User", style="green")
-        user_table.add_column("Organization", style="blue")
-        user_table.add_column("Reason", style="dim")
-        
-        for item in plan.user_items[:10]:  # Limit to first 10
-            action_color = {
-                "CREATE": "green",
-                "UPDATE": "yellow", 
-                "SKIP": "dim",
-            }.get(str(item.action).upper(), "white")
-            
-            user_table.add_row(
-                f"[{action_color}]{item.action}[/{action_color}]",
-                item.okta_resource_id,
-                item.braintrust_org,
-                item.reason,
-            )
-        
-        if len(plan.user_items) > 10:
-            user_table.add_row(
-                "[dim]...[/dim]",
-                f"[dim]and {len(plan.user_items) - 10} more[/dim]",
-                "",
-                "",
-            )
-        
-        console.print(user_table)
+        _display_grouped_items(plan.user_items, "User Sync Items")
     
-    # Display group items
+    # Display group items grouped by action
     if plan.group_items:
-        group_table = Table(title="Group Sync Items")
-        group_table.add_column("Action", style="cyan") 
-        group_table.add_column("Okta Group", style="green")
-        group_table.add_column("Organization", style="blue")
-        group_table.add_column("Reason", style="dim")
-        
-        for item in plan.group_items[:10]:  # Limit to first 10
-            action_color = {
-                "CREATE": "green",
-                "UPDATE": "yellow",
-                "SKIP": "dim", 
-            }.get(str(item.action).upper(), "white")
-            
-            group_table.add_row(
-                f"[{action_color}]{item.action}[/{action_color}]",
-                item.okta_resource_id,
-                item.braintrust_org,
-                item.reason,
-            )
-        
-        if len(plan.group_items) > 10:
-            group_table.add_row(
-                "[dim]...[/dim]",
-                f"[dim]and {len(plan.group_items) - 10} more[/dim]",
-                "",
-                "",
-            )
-        
-        console.print(group_table)
+        _display_grouped_items(plan.group_items, "Group Sync Items")
 
 
 def _display_execution_results(progress: ExecutionProgress, dry_run: bool):

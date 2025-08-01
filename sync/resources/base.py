@@ -23,6 +23,7 @@ class SyncAction(str, Enum):
     """Possible sync actions for a resource."""
     CREATE = "create"
     UPDATE = "update"
+    DELETE = "delete"
     SKIP = "skip"
     ERROR = "error"
 
@@ -203,7 +204,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
         pass
     
     @abstractmethod
-    def calculate_updates(
+    async def calculate_updates(
         self,
         okta_resource: OktaResourceType,
         braintrust_resource: BraintrustResourceType,
@@ -216,6 +217,44 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             
         Returns:
             Dictionary of fields that need updating
+        """
+        pass
+    
+    @abstractmethod
+    async def delete_braintrust_resource(
+        self,
+        resource_id: str,
+        braintrust_org: str,
+    ) -> None:
+        """Delete a resource from Braintrust.
+        
+        Args:
+            resource_id: Braintrust resource ID to delete
+            braintrust_org: Target Braintrust organization
+        """
+        pass
+    
+    @abstractmethod
+    def _get_resource_id(self, okta_resource: OktaResourceType) -> Optional[str]:
+        """Get the ID from an Okta resource.
+        
+        Args:
+            okta_resource: Okta resource
+            
+        Returns:
+            Resource ID or None
+        """
+        pass
+    
+    @abstractmethod
+    def _get_braintrust_resource_id(self, braintrust_resource: BraintrustResourceType) -> Optional[str]:
+        """Get the ID from a Braintrust resource.
+        
+        Args:
+            braintrust_resource: Braintrust resource
+            
+        Returns:
+            Resource ID or None
         """
         pass
     
@@ -266,6 +305,14 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                     sync_rules,
                 )
                 plan_items.extend(org_plan_items)
+                
+                # Generate deletion plan items for resources that exist in Braintrust but not in Okta
+                deletion_plan_items = await self._generate_deletion_plan(
+                    okta_resources,
+                    braintrust_org,
+                    sync_rules,
+                )
+                plan_items.extend(deletion_plan_items)
             
             self._logger.info(
                 "Generated sync plan",
@@ -342,7 +389,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                             break
                     
                     if braintrust_resource:
-                        updates = self.calculate_updates(okta_resource, braintrust_resource)
+                        updates = await self.calculate_updates(okta_resource, braintrust_resource)
                         if updates:
                             plan_items.append(SyncPlanItem(
                                 okta_resource_id=okta_id,
@@ -407,6 +454,148 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                 traceback=traceback.format_exc(),
             )
             raise
+    
+    async def _generate_deletion_plan(
+        self,
+        okta_resources: List[OktaResourceType],
+        braintrust_org: str,
+        sync_rules: Dict[str, Any],
+    ) -> List[SyncPlanItem]:
+        """Generate deletion plan for resources that exist in Braintrust but not in Okta.
+        
+        Args:
+            okta_resources: List of current Okta resources (source of truth)
+            braintrust_org: Target Braintrust organization
+            sync_rules: Sync rules configuration
+            
+        Returns:
+            List of deletion plan items
+        """
+        plan_items = []
+        
+        try:
+            # Get current Braintrust resources
+            braintrust_resources = await self.get_braintrust_resources(braintrust_org)
+            
+            # Get state mappings to identify resources managed by this sync tool
+            managed_resources = self._get_managed_resources(braintrust_org)
+            
+            # Create sets of Okta resource identifiers for quick lookup
+            # Use the same identifier method as regular sync planning
+            okta_resource_identifiers = set()
+            for okta_resource in okta_resources:
+                resource_identifier = self.get_resource_identifier(okta_resource)
+                if resource_identifier:
+                    okta_resource_identifiers.add(resource_identifier)
+            
+            self._logger.debug(
+                "Checking for resources to delete",
+                braintrust_org=braintrust_org,
+                okta_resources=len(okta_resource_identifiers),
+                braintrust_resources=len(braintrust_resources),
+                managed_resources=len(managed_resources),
+            )
+            
+            # Check each Braintrust resource
+            for bt_resource in braintrust_resources:
+                bt_resource_id = self._get_braintrust_resource_id(bt_resource)
+                if not bt_resource_id:
+                    continue
+                
+                # Only consider deletion if this resource was created by our sync tool
+                if bt_resource_id not in managed_resources:
+                    self._logger.debug(
+                        "Skipping unmanaged resource",
+                        resource_id=bt_resource_id,
+                        braintrust_org=braintrust_org,
+                    )
+                    continue
+                
+                # Get the corresponding Okta identifier for this Braintrust resource
+                okta_identifier = managed_resources[bt_resource_id]
+                
+                # If the Okta resource no longer exists, plan for deletion
+                if okta_identifier not in okta_resource_identifiers:
+                    plan_items.append(SyncPlanItem(
+                        okta_resource_id=okta_identifier,
+                        okta_resource_type=self.resource_type,
+                        braintrust_org=braintrust_org,
+                        action=SyncAction.DELETE,
+                        reason=f"Resource exists in Braintrust but not in Okta (managed by sync tool)",
+                        existing_braintrust_id=bt_resource_id,
+                    ))
+            
+            self._logger.debug(
+                "Generated deletion plan",
+                braintrust_org=braintrust_org,
+                deletion_items=len(plan_items),
+            )
+            
+            return plan_items
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to generate deletion plan",
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            # Don't raise - deletion plan generation should not fail the whole sync
+            return []
+    
+    def _get_managed_resources(self, braintrust_org: str) -> Dict[str, str]:
+        """Get mapping of Braintrust resource IDs to Okta resource IDs for resources managed by this sync tool.
+        
+        Args:
+            braintrust_org: Braintrust organization name
+            
+        Returns:
+            Dictionary mapping Braintrust resource ID -> Okta resource ID
+        """
+        managed_resources = {}
+        
+        try:
+            # Load persistent mappings from state
+            persistent_mappings = self.state_manager._load_persistent_mappings()
+            
+            for mapping_key, mapping in persistent_mappings.items():
+                if (mapping.resource_type == self.resource_type and 
+                    mapping.braintrust_org == braintrust_org):
+                    managed_resources[mapping.braintrust_id] = mapping.okta_id
+            
+            self._logger.debug(
+                "Loaded managed resources",
+                braintrust_org=braintrust_org,
+                resource_type=self.resource_type,
+                count=len(managed_resources),
+            )
+            
+        except Exception as e:
+            self._logger.warning(
+                "Could not load managed resources from state",
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+        
+        return managed_resources
+    
+    def _estimate_duration(self, action: SyncAction) -> float:
+        """Estimate duration for a sync action in seconds.
+        
+        Args:
+            action: The sync action to estimate
+            
+        Returns:
+            Estimated duration in seconds
+        """
+        # Basic estimates - subclasses can override for more specific estimates
+        duration_estimates = {
+            SyncAction.CREATE: 5.0,
+            SyncAction.UPDATE: 3.0,
+            SyncAction.DELETE: 2.0,
+            SyncAction.SKIP: 0.1,
+            SyncAction.ERROR: 0.1,
+        }
+        return duration_estimates.get(action, 3.0)
     
     async def execute_sync_plan(
         self,
@@ -529,6 +718,9 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             
             elif plan_item.action == SyncAction.UPDATE:
                 return await self._execute_update(plan_item, operation, dry_run)
+            
+            elif plan_item.action == SyncAction.DELETE:
+                return await self._execute_delete(plan_item, operation, dry_run)
             
             else:
                 raise ValueError(f"Unknown sync action: {plan_item.action}")
@@ -694,4 +886,69 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             action=SyncAction.UPDATE,
             success=True,
             metadata={"applied_changes": plan_item.proposed_changes},
+        )
+    
+    async def _execute_delete(
+        self,
+        plan_item: SyncPlanItem,
+        operation: SyncOperation,
+        dry_run: bool,
+    ) -> SyncResult:
+        """Execute a delete operation.
+        
+        Args:
+            plan_item: Plan item to execute
+            operation: Sync operation for tracking
+            dry_run: If True, don't make actual changes
+            
+        Returns:
+            Sync result
+        """
+        if dry_run:
+            operation.mark_completed()
+            return SyncResult(
+                operation_id=operation.operation_id,
+                okta_resource_id=plan_item.okta_resource_id,
+                braintrust_resource_id=plan_item.braintrust_resource_id,
+                braintrust_org=plan_item.braintrust_org,
+                action=SyncAction.DELETE,
+                success=True,
+                metadata={"dry_run": True, "reason": plan_item.reason},
+            )
+        
+        # Delete the resource from Braintrust
+        await self.delete_braintrust_resource(
+            plan_item.braintrust_resource_id,
+            plan_item.braintrust_org,
+        )
+        
+        # Remove the resource mapping from state
+        current_state = self.state_manager.get_current_state()
+        if current_state:
+            # Find and remove the mapping
+            mapping_key = f"{plan_item.okta_resource_id}:{plan_item.braintrust_org}:{self.resource_type}"
+            if mapping_key in current_state.resource_mappings:
+                del current_state.resource_mappings[mapping_key]
+                self._logger.debug(
+                    "Removed resource mapping from state",
+                    mapping_key=mapping_key,
+                )
+        
+        operation.mark_completed()
+        
+        self._logger.info(
+            "Deleted resource",
+            okta_resource_id=plan_item.okta_resource_id,
+            braintrust_resource_id=plan_item.braintrust_resource_id,
+            braintrust_org=plan_item.braintrust_org,
+        )
+        
+        return SyncResult(
+            operation_id=operation.operation_id,
+            okta_resource_id=plan_item.okta_resource_id,
+            braintrust_resource_id=plan_item.braintrust_resource_id,
+            braintrust_org=plan_item.braintrust_org,
+            action=SyncAction.DELETE,
+            success=True,
+            metadata={"reason": plan_item.reason},
         )

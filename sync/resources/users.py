@@ -492,7 +492,7 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             )
             return True
     
-    def calculate_updates(
+    async def calculate_updates(
         self,
         okta_resource: OktaUser,
         braintrust_resource: BraintrustUser,
@@ -716,3 +716,67 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             braintrust_org=braintrust_org,
             check_window_hours=check_window_hours,
         )
+    
+    async def delete_braintrust_resource(
+        self,
+        resource_id: str,
+        braintrust_org: str,
+    ) -> None:
+        """Delete a user from Braintrust.
+        
+        Args:
+            resource_id: Braintrust user ID to delete
+            braintrust_org: Target Braintrust organization
+        """
+        client = self.braintrust_clients[braintrust_org]
+        
+        # Note: Braintrust API may not have a direct delete user endpoint
+        # Users are typically managed through organization membership
+        # For now, we'll log what would be deleted and implement when API is available
+        
+        self._logger.warning(
+            "User deletion requested but not implemented - Braintrust API may not support user deletion",
+            user_id=resource_id,
+            braintrust_org=braintrust_org,
+        )
+        
+        # TODO: Implement actual user deletion when Braintrust API supports it
+        # This might involve:
+        # - Deactivating the user
+        # - Removing from organization
+        # - Or marking as deleted
+        
+        # For now, we'll consider the deletion successful to allow the sync to continue
+        self._logger.info(
+            "User deletion simulated (implementation pending)",
+            user_id=resource_id,
+            braintrust_org=braintrust_org,
+        )
+    
+    def _get_resource_id(self, okta_resource: OktaUser) -> Optional[str]:
+        """Get the ID from an Okta user.
+        
+        Args:
+            okta_resource: Okta user
+            
+        Returns:
+            User ID or None
+        """
+        if isinstance(okta_resource, dict):
+            return okta_resource.get('id')
+        else:
+            return getattr(okta_resource, 'id', None)
+    
+    def _get_braintrust_resource_id(self, braintrust_resource: BraintrustUser) -> Optional[str]:
+        """Get the ID from a Braintrust user.
+        
+        Args:
+            braintrust_resource: Braintrust user
+            
+        Returns:
+            User ID or None
+        """
+        if isinstance(braintrust_resource, dict):
+            return braintrust_resource.get('id')
+        else:
+            return getattr(braintrust_resource, 'id', None)

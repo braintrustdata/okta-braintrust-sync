@@ -155,7 +155,7 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
             client = self.braintrust_clients[braintrust_org]
             
             # Extract group information from Okta group
-            group_data = self._extract_group_data(okta_resource)
+            group_data = await self._extract_group_data(okta_resource)
             
             # Apply additional data if provided
             if additional_data:
@@ -482,7 +482,7 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
             )
             return True
     
-    def calculate_updates(
+    async def calculate_updates(
         self,
         okta_resource: OktaGroup,
         braintrust_resource: BraintrustGroup,
@@ -500,7 +500,7 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
         
         try:
             # Extract current Okta group data
-            okta_data = self._extract_group_data(okta_resource)
+            okta_data = await self._extract_group_data(okta_resource)
             
             # Compare group name
             if okta_data["name"] != getattr(braintrust_resource, "name", ""):
@@ -542,6 +542,8 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
                 okta_group_id=okta_group_id,
                 braintrust_group_id=braintrust_group_id,
                 updates=list(updates.keys()),
+                current_members=current_members if self.sync_group_memberships else "membership sync disabled",
+                target_members=target_members if self.sync_group_memberships else "membership sync disabled",
             )
             
             return updates
@@ -555,7 +557,7 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
             )
             return {}
     
-    def _extract_group_data(self, okta_group: OktaGroup) -> Dict[str, Any]:
+    async def _extract_group_data(self, okta_group: OktaGroup) -> Dict[str, Any]:
         """Extract group data from Okta group for Braintrust creation/update.
         
         Args:
@@ -581,22 +583,61 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
             "description": description or f"Synced from Okta group: {group_name}",
         }
         
-        # Add member information if available and membership sync is enabled
+        # Add member information by fetching from Okta API if membership sync is enabled
         if self.sync_group_memberships:
-            # Get members from the group object if available
-            members = getattr(okta_group, "members", [])
-            if members:
-                # Extract user emails/identifiers for Braintrust user lookup
-                member_users = []
-                for member in members:
-                    if hasattr(member, "profile") and hasattr(member.profile, "email"):
-                        member_users.append(member.profile.email)
-                    elif isinstance(member, dict) and "email" in member:
-                        member_users.append(member["email"])
-                    elif hasattr(member, "email"):
-                        member_users.append(member.email)
+            # Get group ID and name for API calls and logging
+            if isinstance(okta_group, dict):
+                group_id = okta_group.get("id")
+                group_name = okta_group.get("profile", {}).get("name", "unknown")
+            else:
+                group_id = okta_group.id
+                group_name = okta_group.profile.get("name", "unknown")
+            
+            try:
+                # Fetch actual group membership from Okta API
+                self._logger.debug(
+                    "Fetching group membership from Okta API",
+                    group_name=group_name,
+                    group_id=group_id,
+                )
                 
-                group_data["member_users"] = member_users
+                okta_members = await self.okta_client.get_group_members(group_id)
+                
+                # Extract user emails from Okta group members
+                member_emails = []
+                for member in okta_members:
+                    if hasattr(member, "email"):
+                        # Use the email property if available
+                        member_emails.append(member.email)
+                    elif hasattr(member, "profile") and isinstance(member.profile, dict):
+                        # OktaUser has profile as a dict
+                        email = member.profile.get("email")
+                        if email:
+                            member_emails.append(email)
+                    elif isinstance(member, dict):
+                        # Handle raw dict format
+                        profile = member.get("profile", {})
+                        if "email" in profile:
+                            member_emails.append(profile["email"])
+                
+                group_data["member_users"] = member_emails
+                
+                self._logger.info(
+                    "Fetched group membership from Okta",
+                    group_name=group_name,
+                    member_count=len(member_emails),
+                    members=member_emails[:3] if len(member_emails) <= 3 else f"{member_emails[:3]}... (+{len(member_emails)-3} more)",
+                )
+                
+            except Exception as e:
+                self._logger.error(
+                    "Failed to fetch group membership from Okta",
+                    group_name=group_name,
+                    group_id=group_id,
+                    error=str(e),
+                )
+                # Don't set member_users if we can't fetch them
+                pass
         
         return group_data
     
@@ -756,3 +797,63 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
                 error=str(e),
             )
             return None
+    
+    async def delete_braintrust_resource(
+        self,
+        resource_id: str,
+        braintrust_org: str,
+    ) -> None:
+        """Delete a group from Braintrust.
+        
+        Args:
+            resource_id: Braintrust group ID to delete
+            braintrust_org: Target Braintrust organization
+        """
+        client = self.braintrust_clients[braintrust_org]
+        
+        try:
+            # Use the Braintrust API delete method
+            client.client.groups.delete(resource_id)
+            
+            self._logger.info(
+                "Deleted group",
+                group_id=resource_id,
+                braintrust_org=braintrust_org,
+            )
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to delete group",
+                group_id=resource_id,
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            raise
+    
+    def _get_resource_id(self, okta_resource: OktaGroup) -> Optional[str]:
+        """Get the ID from an Okta group.
+        
+        Args:
+            okta_resource: Okta group
+            
+        Returns:
+            Group ID or None
+        """
+        if isinstance(okta_resource, dict):
+            return okta_resource.get('id')
+        else:
+            return getattr(okta_resource, 'id', None)
+    
+    def _get_braintrust_resource_id(self, braintrust_resource: BraintrustGroup) -> Optional[str]:
+        """Get the ID from a Braintrust group.
+        
+        Args:
+            braintrust_resource: Braintrust group
+            
+        Returns:
+            Group ID or None
+        """
+        if isinstance(braintrust_resource, dict):
+            return braintrust_resource.get('id')
+        else:
+            return getattr(braintrust_resource, 'id', None)
