@@ -677,12 +677,17 @@ def _display_grouped_items(items, title: str):
         "SKIP": "[dim]SKIP[/dim]",
     }
     
-    for item in sorted_items:
+    previous_resource_id = None
+    for i, item in enumerate(sorted_items):
         action_str = item.action.value if hasattr(item.action, 'value') else str(item.action)
         colored_action = action_colors.get(action_str, action_str)
         
         # Show detailed changes like Terraform
         changes_display = _format_terraform_style_changes(item)
+        
+        # Add separator line between different resources (groups/users)
+        if previous_resource_id is not None and previous_resource_id != item.okta_resource_id:
+            table.add_row("[dim]───[/dim]", "[dim]───[/dim]", "[dim]───[/dim]", "[dim]───[/dim]")
         
         table.add_row(
             colored_action,
@@ -690,6 +695,8 @@ def _display_grouped_items(items, title: str):
             item.braintrust_org,
             changes_display,
         )
+        
+        previous_resource_id = item.okta_resource_id
     
     console.print(table)
 
@@ -722,12 +729,10 @@ def _format_terraform_style_changes(item) -> str:
             if isinstance(new_value, list):
                 if len(new_value) == 0:
                     changes.append("[dim]member_users = [][/dim] (empty)")
-                elif len(new_value) <= 3:
+                else:
+                    # Show all members, no truncation
                     members_str = ", ".join(new_value)
                     changes.append(f"[dim]member_users = [[/dim][green]{members_str}[/green][dim]][/dim]")
-                else:
-                    members_preview = ", ".join(new_value[:3])
-                    changes.append(f"[dim]member_users = [[/dim][green]{members_preview}[/green][dim], ... +{len(new_value)-3} more][/dim]")
             else:
                 changes.append(f"[dim]member_users = [/dim][green]{new_value}[/green]")
         elif field == "member_groups":
