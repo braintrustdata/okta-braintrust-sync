@@ -8,6 +8,9 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, HttpUrl, SecretStr, field_validator, model_validator
 
+# Import group assignment models for flexible group/attribute mapping
+from sync.config.group_assignment_models import GroupAssignmentRules
+
 
 class LogLevel(str, Enum):
     """Logging levels."""
@@ -453,6 +456,12 @@ class SyncConfig(BaseModel):
     sync_options: SyncOptionsConfig = Field(
         default_factory=SyncOptionsConfig,
         description="General sync options"
+    )
+    
+    # Group assignment configuration
+    group_assignment: Optional['GroupAssignmentRules'] = Field(
+        None,
+        description="Group assignment rules for users after invitation acceptance"
     )
     
     # Audit configuration
