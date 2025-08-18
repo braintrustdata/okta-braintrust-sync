@@ -27,6 +27,16 @@
   2. User profile attributes (department, title, location, etc.)
   3. Hybrid approach combining both
 
+### Role-Project Workflow (Groups → Roles → Projects)
+- Enables granular and reusable ACLs through a three-tier system:
+  1. **Groups**: Collections of users (synced from Okta)
+  2. **Roles**: Named permission sets (create, read, update, delete, ACL management)
+  3. **Projects**: Specific Braintrust projects where roles are applied
+- Workflow: Users → Groups → Roles → Projects via ACLs
+- Benefits: Role changes automatically apply to all assigned groups/projects
+- Supports pattern-based project matching (regex, contains, starts/ends with)
+- Per-organization configuration with global defaults
+
 ### Testing Commands
 - Run tests: `pytest`
 - Run specific test file: `pytest tests/test_file.py`

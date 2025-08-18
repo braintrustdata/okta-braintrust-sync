@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field, HttpUrl, SecretStr, field_validator, mode
 
 # Import group assignment models for flexible group/attribute mapping
 from sync.config.group_assignment_models import GroupAssignmentRules
+# Import role-project models for Groups → Roles → Projects workflow
+from sync.config.role_project_models import RoleProjectRules
 
 
 class LogLevel(str, Enum):
@@ -462,6 +464,12 @@ class SyncConfig(BaseModel):
     group_assignment: Optional['GroupAssignmentRules'] = Field(
         None,
         description="Group assignment rules for users after invitation acceptance"
+    )
+    
+    # Role-project assignment configuration
+    role_project_assignment: Optional['RoleProjectRules'] = Field(
+        None,
+        description="Role and project assignment rules for Groups → Roles → Projects workflow"
     )
     
     # Audit configuration

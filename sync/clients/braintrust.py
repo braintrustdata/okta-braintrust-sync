@@ -14,6 +14,7 @@ from sync.clients.exceptions import (
     ResourceNotFoundError,
     ValidationError,
 )
+from sync.config.role_project_models import RoleDefinition, RolePermission
 
 logger = structlog.get_logger(__name__)
 
@@ -827,3 +828,556 @@ class BraintrustClient:
         except Exception as e:
             self._logger.warning("Error searching for group by name", name=name, error=str(e))
             return None
+    
+    # ========== Role Management Methods ==========
+    
+    async def create_role(self, role_definition: RoleDefinition) -> Dict[str, Any]:
+        """Create a new role in the organization.
+        
+        Args:
+            role_definition: Role definition with name, description, and permissions
+            
+        Returns:
+            Created role object with ID
+            
+        Raises:
+            BraintrustError: If role creation fails
+        """
+        try:
+            self._request_count += 1
+            
+            # Convert RoleDefinition to API format
+            member_permissions = []
+            for perm in role_definition.member_permissions:
+                perm_dict = {"permission": perm.permission.value}
+                if perm.restrict_object_type:
+                    perm_dict["restrict_object_type"] = perm.restrict_object_type.value
+                else:
+                    perm_dict["restrict_object_type"] = None
+                member_permissions.append(perm_dict)
+            
+            payload = {
+                "name": role_definition.name,
+                "description": role_definition.description,
+                "member_permissions": member_permissions
+            }
+            
+            response = await self._make_request("POST", "/v1/role", payload)
+            
+            self._logger.info(
+                "Created role",
+                role_name=role_definition.name,
+                permission_count=len(member_permissions),
+                role_id=response.get('id'),
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def get_role_by_name(self, role_name: str) -> Optional[Dict[str, Any]]:
+        """Get a role by name.
+        
+        Args:
+            role_name: Name of the role to find
+            
+        Returns:
+            Role object if found, None otherwise
+        """
+        try:
+            self._request_count += 1
+            
+            response = await self._make_request(
+                "GET", 
+                "/v1/role", 
+                params={"role_name": role_name}
+            )
+            
+            # API returns {objects: [...]} format
+            roles = response.get("objects", [])
+            if roles:
+                return roles[0]
+            return None
+            
+        except Exception as e:
+            self._logger.warning(
+                "Error getting role by name",
+                role_name=role_name,
+                error=str(e)
+            )
+            return None
+    
+    async def list_roles(self) -> List[Dict[str, Any]]:
+        """List all roles in the organization.
+        
+        Returns:
+            List of role objects
+        """
+        try:
+            self._request_count += 1
+            
+            response = await self._make_request("GET", "/v1/role")
+            
+            return response.get("objects", [])
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def update_role(
+        self,
+        role_id: str,
+        member_permissions: List[RolePermission],
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update an existing role.
+        
+        Args:
+            role_id: UUID of the role to update
+            member_permissions: New set of permissions for the role
+            name: Optional new name for the role
+            description: Optional new description for the role
+            
+        Returns:
+            Updated role object
+            
+        Raises:
+            BraintrustError: If role update fails
+        """
+        try:
+            self._request_count += 1
+            
+            # Convert permissions to API format
+            api_permissions = []
+            for perm in member_permissions:
+                perm_dict = {"permission": perm.permission.value}
+                if perm.restrict_object_type:
+                    perm_dict["restrict_object_type"] = perm.restrict_object_type.value
+                else:
+                    perm_dict["restrict_object_type"] = None
+                api_permissions.append(perm_dict)
+            
+            payload = {"member_permissions": api_permissions}
+            if name:
+                payload["name"] = name
+            if description:
+                payload["description"] = description
+            
+            response = await self._make_request("PATCH", f"/v1/role/{role_id}", payload)
+            
+            self._logger.info(
+                "Updated role",
+                role_id=role_id,
+                permission_count=len(api_permissions),
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def delete_role(self, role_id: str) -> bool:
+        """Delete a role.
+        
+        Args:
+            role_id: UUID of the role to delete
+            
+        Returns:
+            True if deletion was successful
+            
+        Raises:
+            BraintrustError: If role deletion fails
+        """
+        try:
+            self._request_count += 1
+            
+            await self._make_request("DELETE", f"/v1/role/{role_id}")
+            
+            self._logger.info("Deleted role", role_id=role_id)
+            
+            return True
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    # ========== ACL Management Methods ==========
+    
+    async def create_acl(
+        self,
+        object_type: str,
+        object_id: str,
+        group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        role_id: Optional[str] = None,
+        permission: Optional[str] = None,
+        restrict_object_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a single ACL entry.
+        
+        Args:
+            object_type: Type of object (e.g., 'project', 'organization')
+            object_id: UUID of the object
+            group_id: UUID of group (exactly one of group_id/user_id required)
+            user_id: UUID of user (exactly one of group_id/user_id required)
+            role_id: UUID of role (exactly one of role_id/permission required)
+            permission: Direct permission (exactly one of role_id/permission required)
+            restrict_object_type: Optional restriction to specific object types
+            
+        Returns:
+            Created ACL object
+            
+        Raises:
+            BraintrustError: If ACL creation fails
+        """
+        try:
+            self._request_count += 1
+            
+            payload = {
+                "object_type": object_type,
+                "object_id": object_id,
+            }
+            
+            # Add user or group (exactly one required)
+            if group_id:
+                payload["group_id"] = group_id
+            elif user_id:
+                payload["user_id"] = user_id
+            else:
+                raise ValidationError("Either group_id or user_id must be provided")
+            
+            # Add role or permission (exactly one required)
+            if role_id:
+                payload["role_id"] = role_id
+            elif permission:
+                payload["permission"] = permission
+            else:
+                raise ValidationError("Either role_id or permission must be provided")
+            
+            if restrict_object_type:
+                payload["restrict_object_type"] = restrict_object_type
+            
+            response = await self._make_request("POST", "/v1/acl", payload)
+            
+            self._logger.info(
+                "Created ACL",
+                object_type=object_type,
+                group_id=group_id,
+                user_id=user_id,
+                role_id=role_id,
+                permission=permission,
+                acl_id=response.get('id'),
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def batch_update_acls(
+        self,
+        add_acls: List[Dict[str, Any]],
+        remove_acls: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Batch update ACLs (add and/or remove multiple ACLs).
+        
+        This is the preferred method for adding a group to multiple projects.
+        
+        Args:
+            add_acls: List of ACL entries to add
+            remove_acls: Optional list of ACL entries to remove
+            
+        Returns:
+            Dictionary with added_acls and removed_acls lists
+            
+        Raises:
+            BraintrustError: If batch update fails
+        """
+        try:
+            self._request_count += 1
+            
+            payload = {
+                "add_acls": add_acls,
+                "remove_acls": remove_acls or []
+            }
+            
+            response = await self._make_request("POST", "/v1/acl/batch_update", payload)
+            
+            self._logger.info(
+                "Batch updated ACLs",
+                added_count=len(response.get("added_acls", [])),
+                removed_count=len(response.get("removed_acls", [])),
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def list_acls(
+        self,
+        object_type: Optional[str] = None,
+        object_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List ACLs with optional filtering.
+        
+        Args:
+            object_type: Filter by object type
+            object_id: Filter by object ID
+            group_id: Filter by group ID
+            user_id: Filter by user ID
+            
+        Returns:
+            List of ACL objects
+        """
+        try:
+            self._request_count += 1
+            
+            params = {}
+            if object_type:
+                params["object_type"] = object_type
+            if object_id:
+                params["object_id"] = object_id
+            if group_id:
+                params["group_id"] = group_id
+            if user_id:
+                params["user_id"] = user_id
+            
+            response = await self._make_request("GET", "/v1/acl", params=params)
+            
+            return response.get("objects", [])
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def list_org_acls(
+        self,
+        org_name: str,
+        object_type: Optional[str] = None,
+        group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List all ACLs in an organization (requires read_acls permission at org level).
+        
+        Args:
+            org_name: Organization name
+            object_type: Optional filter by object type
+            group_id: Optional filter by group ID
+            user_id: Optional filter by user ID
+            
+        Returns:
+            List of ACL objects
+        """
+        try:
+            self._request_count += 1
+            
+            params = {"org_name": org_name}
+            if object_type:
+                params["object_type"] = object_type
+            if group_id:
+                params["group_id"] = group_id
+            if user_id:
+                params["user_id"] = user_id
+            
+            response = await self._make_request("GET", "/v1/acl/list_org", params=params)
+            
+            return response.get("objects", [])
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def delete_acl(self, acl_id: str) -> bool:
+        """Delete an ACL entry.
+        
+        Args:
+            acl_id: UUID of the ACL to delete
+            
+        Returns:
+            True if deletion was successful
+            
+        Raises:
+            BraintrustError: If ACL deletion fails
+        """
+        try:
+            self._request_count += 1
+            
+            await self._make_request("DELETE", f"/v1/acl/{acl_id}")
+            
+            self._logger.info("Deleted ACL", acl_id=acl_id)
+            
+            return True
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    # ========== Project Management Methods ==========
+    
+    async def list_projects(self, org_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List all projects in the organization.
+        
+        Args:
+            org_name: Optional organization name filter
+            
+        Returns:
+            List of project objects
+        """
+        try:
+            self._request_count += 1
+            
+            params = {}
+            if org_name:
+                params["org_name"] = org_name
+            
+            response = await self._make_request("GET", "/v1/project", params=params)
+            
+            return response.get("objects", [])
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def get_project_by_name(
+        self,
+        project_name: str,
+        org_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a project by name.
+        
+        Args:
+            project_name: Name of the project to find
+            org_name: Optional organization name
+            
+        Returns:
+            Project object if found, None otherwise
+        """
+        try:
+            self._request_count += 1
+            
+            params = {"project_name": project_name}
+            if org_name:
+                params["org_name"] = org_name
+            
+            response = await self._make_request("GET", "/v1/project", params=params)
+            
+            projects = response.get("objects", [])
+            if projects:
+                return projects[0]
+            return None
+            
+        except Exception as e:
+            self._logger.warning(
+                "Error getting project by name",
+                project_name=project_name,
+                error=str(e)
+            )
+            return None
+    
+    # ========== High-Level Workflow Methods ==========
+    
+    async def assign_group_role_to_projects(
+        self,
+        group_name: str,
+        role_name: str,
+        project_names: List[str],
+        org_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Assign a group with a role to multiple projects.
+        
+        This is a high-level method that combines multiple API calls to:
+        1. Find the group by name
+        2. Find the role by name
+        3. Find projects by names (or use project IDs if provided)
+        4. Create ACLs via batch update
+        
+        Args:
+            group_name: Name of the group
+            role_name: Name of the role
+            project_names: List of project names or UUIDs
+            org_name: Optional organization name
+            
+        Returns:
+            Dictionary with success status and results
+        """
+        try:
+            # Step 1: Get the group
+            group = await self.find_group_by_name(group_name)
+            if not group:
+                raise ResourceNotFoundError(f"Group '{group_name}' not found")
+            
+            group_id = group.get('id') if isinstance(group, dict) else getattr(group, 'id')
+            
+            # Step 2: Get the role
+            role = await self.get_role_by_name(role_name)
+            if not role:
+                raise ResourceNotFoundError(f"Role '{role_name}' not found")
+            
+            role_id = role.get('id')
+            
+            # Step 3: Get project IDs
+            project_ids = []
+            for project_name in project_names:
+                # Check if it's already a UUID
+                if self._is_uuid(project_name):
+                    project_ids.append(project_name)
+                else:
+                    # Look up by name
+                    project = await self.get_project_by_name(project_name, org_name)
+                    if not project:
+                        raise ResourceNotFoundError(f"Project '{project_name}' not found")
+                    project_ids.append(project.get('id'))
+            
+            # Step 4: Build ACL entries
+            acl_entries = []
+            for project_id in project_ids:
+                acl_entries.append({
+                    "object_type": "project",
+                    "object_id": project_id,
+                    "group_id": group_id,
+                    "role_id": role_id
+                })
+            
+            # Step 5: Batch create ACLs
+            result = await self.batch_update_acls(add_acls=acl_entries)
+            
+            return {
+                "success": True,
+                "group_name": group_name,
+                "group_id": group_id,
+                "role_name": role_name,
+                "role_id": role_id,
+                "project_count": len(project_ids),
+                "added_acls": result.get("added_acls", []),
+                "message": f"Successfully assigned group '{group_name}' with role '{role_name}' to {len(project_ids)} projects"
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "group_name": group_name,
+                "role_name": role_name,
+                "error": str(e)
+            }
+    
+    def _is_uuid(self, value: str) -> bool:
+        """Check if a string looks like a UUID.
+        
+        Args:
+            value: String to check
+            
+        Returns:
+            True if the string looks like a UUID
+        """
+        import re
+        uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+        return bool(uuid_pattern.match(value))
