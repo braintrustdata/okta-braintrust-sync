@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient
 from sync.config.models import SyncConfig
-from sync.core.state import StateManager
+from sync.core.enhanced_state import StateManager
 from sync.resources.base import SyncPlanItem, SyncAction
 from sync.resources.users import UserSyncer
 from sync.resources.groups import GroupSyncer

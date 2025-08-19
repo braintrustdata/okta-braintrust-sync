@@ -12,7 +12,7 @@ from sync.audit.logger import AuditLogger, AuditSummary
 from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient
 from sync.core.planner import SyncPlan
-from sync.core.state import StateManager, SyncState
+from sync.core.enhanced_state import StateManager, EnhancedSyncState
 from sync.resources.base import SyncResult, SyncAction
 from sync.resources.users import UserSyncer
 from sync.resources.groups import GroupSyncer

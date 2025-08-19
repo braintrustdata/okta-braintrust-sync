@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient, OktaUser, OktaGroup
-from sync.core.state import StateManager, SyncOperation, SyncState
+from sync.core.enhanced_state import StateManager, SyncOperation, SyncState
 
 logger = structlog.get_logger(__name__)
 

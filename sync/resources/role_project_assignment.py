@@ -13,8 +13,7 @@ from sync.config.role_project_models import (
     ProjectMatchRule,
     STANDARD_ROLES,
 )
-from sync.core.state import StateManager
-from sync.core.enhanced_state import ResourceType
+from sync.core.enhanced_state import StateManager, ResourceType
 
 logger = structlog.get_logger(__name__)
 

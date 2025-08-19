@@ -7,7 +7,7 @@ from braintrust_api.types import User as BraintrustUser
 
 from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient, OktaUser
-from sync.core.state import StateManager
+from sync.core.enhanced_state import StateManager
 from sync.resources.base import BaseResourceSyncer
 from sync.resources.user_group_assignment import UserGroupAssignmentManager
 

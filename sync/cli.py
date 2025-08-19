@@ -17,7 +17,7 @@ from sync.config.loader import ConfigLoader, find_config_file
 from sync.config.models import SyncConfig
 from sync.clients.okta import OktaClient
 from sync.clients.braintrust import BraintrustClient
-from sync.core.state import StateManager
+from sync.core.enhanced_state import StateManager
 from sync.core.planner import SyncPlanner
 from sync.core.executor import SyncExecutor, ExecutionProgress
 from sync.version import __version__

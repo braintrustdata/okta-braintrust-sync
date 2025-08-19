@@ -7,7 +7,7 @@ from braintrust_api.types import Group as BraintrustGroup, User as BraintrustUse
 
 from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient, OktaGroup, OktaUser
-from sync.core.state import StateManager
+from sync.core.enhanced_state import StateManager
 from sync.resources.base import BaseResourceSyncer
 
 logger = structlog.get_logger(__name__)
