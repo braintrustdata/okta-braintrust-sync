@@ -56,10 +56,7 @@ dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     
-    # Queue & storage
-    "redis>=5.0.0",
-    "sqlalchemy>=2.0.0",
-    "alembic>=1.12.0",
+    # Queue & storage - removed (not implemented)
     
     # Scheduling
     "apscheduler>=3.10.0",
@@ -87,7 +84,6 @@ dev = [
     # Type stubs
     "types-requests>=2.31.0",
     "types-pyyaml>=6.0.0",
-    "types-redis>=4.6.0",
 ]
 
 # Docker/container deployment

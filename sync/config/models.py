@@ -31,8 +31,7 @@ class LogFormat(str, Enum):
 class QueueBackend(str, Enum):
     """Queue backend types."""
     MEMORY = "memory"
-    REDIS = "redis"
-    DATABASE = "database"
+    # Redis and database backends not implemented
 
 
 class IdentityMappingStrategy(str, Enum):
@@ -478,15 +477,6 @@ class SyncConfig(BaseModel):
         description="Audit and logging configuration"
     )
     
-    # Optional external configurations
-    redis_url: Optional[str] = Field(
-        None,
-        description="Redis URL for queue backend (when queue_backend=redis)"
-    )
-    database_url: Optional[str] = Field(
-        None,
-        description="Database URL for state persistence"
-    )
     
     @model_validator(mode='after')
     def validate_braintrust_orgs_exist(self) -> 'SyncConfig':
@@ -509,15 +499,6 @@ class SyncConfig(BaseModel):
         
         return self
     
-    @model_validator(mode='after') 
-    def validate_queue_backend_config(self) -> 'SyncConfig':
-        """Validate queue backend configuration."""
-        if (self.sync_modes.realtime.enabled and 
-            self.sync_modes.realtime.queue_backend == QueueBackend.REDIS and 
-            not self.redis_url):
-            raise ValueError("redis_url is required when queue_backend=redis")
-        
-        return self
 
 
 # Runtime State Models (for internal use)

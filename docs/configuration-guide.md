@@ -15,10 +15,8 @@ This guide provides comprehensive documentation for configuring the okta-braintr
 - ✅ **Okta/Braintrust API Clients** - Full API integration
 - ✅ **CLI Commands** - Sync, plan, validate commands
 
-**Not Yet Implemented (⚠️ Configuration Placeholders Only):**
+**Not Yet Implemented (⚠️ Removed from Configuration):**
 - ⚠️ **Real-time/Webhook Mode** - Event-driven synchronization
-- ⚠️ **Redis Integration** - Queue backend for events
-- ⚠️ **Database Integration** - State persistence
 - ⚠️ **Priority Rules** - Event routing between modes
 - ⚠️ **Advanced CLI Features** - Status monitoring, reconciliation
 - ⚠️ **User Updates** - Braintrust API limitation
@@ -60,9 +58,7 @@ sync_modes: {...}                    # When to sync (schedule/realtime)
 sync_options: {...}                 # How to sync (batching/retries)
 audit: {...}                        # Logging and auditing
 
-# Optional External Services
-redis_url: "..."                     # For queue backend
-database_url: "..."                 # For state persistence
+# External services removed - not implemented
 ```
 
 ## Core Configuration Sections
@@ -622,7 +618,7 @@ sync_modes:
     enabled: false                   # ⚠️ NOT IMPLEMENTED - Keep disabled
     webhook_port: 8080               # Configuration placeholder only
     webhook_host: "0.0.0.0"          # Configuration placeholder only
-    queue_backend: "memory"          # ⚠️ Only "memory" works, redis/database not implemented
+    queue_backend: "memory"          # Only memory backend available
     max_queue_size: 10000            # Configuration placeholder only
     worker_count: 4                  # Configuration placeholder only
     critical_events_only: true       # Configuration placeholder only
@@ -1103,9 +1099,9 @@ sync_modes:
     max_concurrent_orgs: 2
   
   realtime:
-    enabled: true
+    enabled: false                    # Not implemented - keep disabled
     webhook_port: 8080
-    queue_backend: "redis"
+    queue_backend: "memory"           # Only memory backend available
     max_queue_size: 10000
     worker_count: 4
     critical_events_only: true
@@ -1131,7 +1127,7 @@ audit:
   retention_days: 90
   include_sensitive_data: false
 
-redis_url: "${REDIS_URL}"            # ⚠️ Redis integration not implemented
+# External services (redis_url, database_url) removed - not implemented
 ```
 
 This configuration guide provides complete coverage of all available options and should serve as a comprehensive reference for configuring the okta-braintrust-sync system for any organization size or complexity.

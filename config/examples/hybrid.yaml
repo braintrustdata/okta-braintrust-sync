@@ -37,7 +37,7 @@ sync_modes:
     enabled: true
     webhook_port: 8080
     webhook_host: "0.0.0.0"
-    queue_backend: "redis"            # redis, memory, database
+    queue_backend: "memory"           # Only memory backend is implemented
     max_queue_size: 10000
     worker_count: 4
     critical_events_only: true       # Only security-critical events
@@ -163,6 +163,4 @@ audit:
   retention_days: 90
   include_sensitive_data: false     # Don't log sensitive data in production
 
-# External service configurations
-redis_url: "${REDIS_URL:redis://localhost:6379/0}"
-database_url: "${DATABASE_URL:sqlite:///./state/sync.db}"
+# External service configurations removed - not implemented
