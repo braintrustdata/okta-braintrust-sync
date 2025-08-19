@@ -1,173 +1,34 @@
-"""State management for sync operations with checkpointing and ID mapping."""
+"""State management for sync operations with enhanced resource tracking and drift detection."""
 
 import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 import structlog
-from pydantic import BaseModel, Field
+
+from sync.core.enhanced_state import (
+    EnhancedSyncState,
+    ManagedResource,
+    RoleState,
+    ACLState,
+    ProjectState,
+    DriftWarning,
+    ResourceType,
+    ManagementStatus,
+)
 
 logger = structlog.get_logger(__name__)
 
 
-class ResourceMapping(BaseModel):
-    """Resource ID mapping between Okta and Braintrust."""
-    
-    okta_id: str
-    braintrust_id: str 
-    braintrust_org: str
-    resource_type: str  # "user" or "group"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    
-    def update_timestamp(self) -> None:
-        """Update the updated_at timestamp."""
-        self.updated_at = datetime.now(timezone.utc)
-
-
-class SyncOperation(BaseModel):
-    """Record of a sync operation."""
-    
-    operation_id: str
-    operation_type: str  # "create", "update", "skip", "error"
-    resource_type: str   # "user", "group"
-    okta_id: str
-    braintrust_id: Optional[str] = None
-    braintrust_org: str
-    status: str  # "pending", "in_progress", "completed", "failed"
-    error_message: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    completed_at: Optional[datetime] = None
-    
-    def mark_completed(self, braintrust_id: Optional[str] = None) -> None:
-        """Mark operation as completed."""
-        self.status = "completed"
-        self.completed_at = datetime.now(timezone.utc)
-        if braintrust_id:
-            self.braintrust_id = braintrust_id
-    
-    def mark_failed(self, error_message: str) -> None:
-        """Mark operation as failed."""
-        self.status = "failed"
-        self.error_message = error_message
-        self.completed_at = datetime.now(timezone.utc)
-
-
-class SyncState(BaseModel):
-    """Comprehensive sync state with checkpointing."""
-    
-    sync_id: str
-    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    completed_at: Optional[datetime] = None
-    status: str = "in_progress"  # "in_progress", "completed", "failed"
-    
-    # Resource mappings - persistent across syncs
-    resource_mappings: Dict[str, ResourceMapping] = Field(default_factory=dict)
-    
-    # Current sync operations
-    operations: Dict[str, SyncOperation] = Field(default_factory=dict)
-    
-    # Statistics
-    stats: Dict[str, Any] = Field(default_factory=dict)
-    
-    # Configuration snapshot
-    config_snapshot: Dict[str, Any] = Field(default_factory=dict)
-    
-    def add_mapping(
-        self,
-        okta_id: str,
-        braintrust_id: str,
-        braintrust_org: str,
-        resource_type: str,
-    ) -> None:
-        """Add or update a resource mapping."""
-        mapping_key = f"{okta_id}:{braintrust_org}:{resource_type}"
-        
-        if mapping_key in self.resource_mappings:
-            # Update existing mapping
-            mapping = self.resource_mappings[mapping_key]
-            mapping.braintrust_id = braintrust_id
-            mapping.update_timestamp()
-        else:
-            # Create new mapping
-            self.resource_mappings[mapping_key] = ResourceMapping(
-                okta_id=okta_id,
-                braintrust_id=braintrust_id,
-                braintrust_org=braintrust_org,
-                resource_type=resource_type,
-            )
-    
-    def get_mapping(
-        self,
-        okta_id: str,
-        braintrust_org: str,
-        resource_type: str,
-    ) -> Optional[ResourceMapping]:
-        """Get a resource mapping."""
-        mapping_key = f"{okta_id}:{braintrust_org}:{resource_type}"
-        return self.resource_mappings.get(mapping_key)
-    
-    def get_braintrust_id(
-        self,
-        okta_id: str,
-        braintrust_org: str,
-        resource_type: str,
-    ) -> Optional[str]:
-        """Get Braintrust ID for an Okta resource."""
-        mapping = self.get_mapping(okta_id, braintrust_org, resource_type)
-        return mapping.braintrust_id if mapping else None
-    
-    def add_operation(self, operation: SyncOperation) -> None:
-        """Add a sync operation."""
-        self.operations[operation.operation_id] = operation
-    
-    def get_operation(self, operation_id: str) -> Optional[SyncOperation]:
-        """Get a sync operation by ID."""
-        return self.operations.get(operation_id)
-    
-    def update_stats(self, stats_update: Dict[str, Any]) -> None:
-        """Update sync statistics."""
-        self.stats.update(stats_update)
-    
-    def mark_completed(self) -> None:
-        """Mark sync as completed."""
-        self.status = "completed"
-        self.completed_at = datetime.now(timezone.utc)
-    
-    def mark_failed(self, error_message: str) -> None:
-        """Mark sync as failed."""
-        self.status = "failed"
-        self.completed_at = datetime.now(timezone.utc)
-        self.stats["error_message"] = error_message
-    
-    def get_summary(self) -> Dict[str, Any]:
-        """Get sync summary statistics."""
-        completed_ops = [op for op in self.operations.values() if op.status == "completed"]
-        failed_ops = [op for op in self.operations.values() if op.status == "failed"]
-        
-        return {
-            "sync_id": self.sync_id,
-            "status": self.status,
-            "started_at": self.started_at,
-            "completed_at": self.completed_at,
-            "duration_seconds": (
-                (self.completed_at or datetime.now(timezone.utc)) - self.started_at
-            ).total_seconds(),
-            "total_operations": len(self.operations),
-            "completed_operations": len(completed_ops),
-            "failed_operations": len(failed_ops),
-            "total_mappings": len(self.resource_mappings),
-            "stats": self.stats,
-        }
-
-
 class StateManager:
-    """Manages sync state with persistent checkpointing."""
+    """Manages sync state with enhanced resource tracking and drift detection."""
     
-    def __init__(self, state_dir: Path = Path("./state")) -> None:
+    def __init__(
+        self, 
+        state_dir: Path = Path("./state"),
+    ) -> None:
         """Initialize state manager.
         
         Args:
@@ -176,54 +37,55 @@ class StateManager:
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         
-        self._current_state: Optional[SyncState] = None
+        # Use enhanced state only
+        self._current_state: Optional[EnhancedSyncState] = None
         self._logger = logger.bind(state_dir=str(self.state_dir))
     
     def create_sync_state(
         self,
         sync_id: Optional[str] = None,
         config_snapshot: Optional[Dict[str, Any]] = None,
-    ) -> SyncState:
-        """Create a new sync state.
+    ) -> EnhancedSyncState:
+        """Create a new enhanced sync state.
         
         Args:
             sync_id: Optional sync ID (generates timestamp-based if not provided)
             config_snapshot: Configuration snapshot for this sync
             
         Returns:
-            New SyncState instance
+            New EnhancedSyncState instance
         """
         if sync_id is None:
             sync_id = f"sync_{int(time.time())}"
         
-        # Load any existing mappings from previous syncs
-        existing_mappings = self._load_persistent_mappings()
-        
-        self._current_state = SyncState(
+        # Create enhanced state
+        self._current_state = EnhancedSyncState(
             sync_id=sync_id,
-            resource_mappings=existing_mappings,
             config_snapshot=config_snapshot or {},
         )
         
-        self._logger.info("Created new sync state", sync_id=sync_id)
+        self._logger.info(
+            "Created new enhanced sync state", 
+            sync_id=sync_id,
+        )
         return self._current_state
     
-    def get_current_state(self) -> Optional[SyncState]:
-        """Get current sync state.
+    def get_current_state(self) -> Optional[EnhancedSyncState]:
+        """Get current enhanced sync state.
         
         Returns:
-            Current SyncState instance or None
+            Current EnhancedSyncState instance or None
         """
         return self._current_state
     
-    def load_sync_state(self, sync_id: str) -> Optional[SyncState]:
-        """Load sync state from disk.
+    def load_sync_state(self, sync_id: str) -> Optional[EnhancedSyncState]:
+        """Load enhanced sync state from disk.
         
         Args:
             sync_id: Sync ID to load
             
         Returns:
-            Loaded SyncState instance or None if not found
+            Loaded EnhancedSyncState instance or None if not found
         """
         state_file = self.state_dir / f"{sync_id}.json"
         
@@ -235,16 +97,24 @@ class StateManager:
             with open(state_file, 'r', encoding='utf-8') as f:
                 state_data = json.load(f)
             
-            self._current_state = SyncState.model_validate(state_data)
-            self._logger.info("Loaded sync state", sync_id=sync_id)
+            self._current_state = EnhancedSyncState.model_validate(state_data)
+            
+            self._logger.info(
+                "Loaded enhanced sync state", 
+                sync_id=sync_id,
+                managed_resources=len(self._current_state.managed_resources),
+                managed_roles=len(self._current_state.managed_roles),
+                managed_acls=len(self._current_state.managed_acls),
+                drift_warnings=len(self._current_state.drift_warnings),
+            )
             return self._current_state
             
         except Exception as e:
             self._logger.error("Failed to load sync state", sync_id=sync_id, error=str(e))
             return None
     
-    def save_sync_state(self, state: Optional[SyncState] = None) -> bool:
-        """Save sync state to disk.
+    def save_sync_state(self, state: Optional[EnhancedSyncState] = None) -> bool:
+        """Save enhanced sync state to disk.
         
         Args:
             state: State to save (uses current state if not provided)
@@ -267,7 +137,7 @@ class StateManager:
                 backup_file = state_file.with_suffix('.json.backup')
                 state_file.rename(backup_file)
             
-            # Save new state
+            # Save enhanced state
             with open(state_file, 'w', encoding='utf-8') as f:
                 json.dump(
                     state.model_dump(mode='json'),
@@ -276,72 +146,18 @@ class StateManager:
                     default=str,  # Handle datetime serialization
                 )
             
-            # Save persistent mappings separately
-            self._save_persistent_mappings(state.resource_mappings)
-            
-            self._logger.debug("Saved sync state", sync_id=state.sync_id, file=str(state_file))
+            self._logger.debug(
+                "Saved enhanced sync state", 
+                sync_id=state.sync_id, 
+                file=str(state_file),
+                managed_resources=len(state.managed_resources),
+                managed_roles=len(state.managed_roles),
+                managed_acls=len(state.managed_acls),
+            )
             return True
             
         except Exception as e:
             self._logger.error("Failed to save sync state", sync_id=state.sync_id, error=str(e))
-            return False
-    
-    def _load_persistent_mappings(self) -> Dict[str, ResourceMapping]:
-        """Load persistent resource mappings from previous syncs.
-        
-        Returns:
-            Dictionary of resource mappings
-        """
-        mappings_file = self.state_dir / "resource_mappings.json"
-        
-        if not mappings_file.exists():
-            return {}
-        
-        try:
-            with open(mappings_file, 'r', encoding='utf-8') as f:
-                mappings_data = json.load(f)
-            
-            mappings = {}
-            for key, mapping_data in mappings_data.items():
-                mappings[key] = ResourceMapping.model_validate(mapping_data)
-            
-            self._logger.debug("Loaded persistent mappings", count=len(mappings))
-            return mappings
-            
-        except Exception as e:
-            self._logger.error("Failed to load persistent mappings", error=str(e))
-            return {}
-    
-    def _save_persistent_mappings(self, mappings: Dict[str, ResourceMapping]) -> bool:
-        """Save persistent resource mappings.
-        
-        Args:
-            mappings: Resource mappings to save
-            
-        Returns:
-            True if saved successfully, False otherwise
-        """
-        mappings_file = self.state_dir / "resource_mappings.json"
-        
-        try:
-            # Create backup
-            if mappings_file.exists():
-                backup_file = mappings_file.with_suffix('.json.backup')
-                mappings_file.rename(backup_file)
-            
-            # Save mappings
-            mappings_data = {}
-            for key, mapping in mappings.items():
-                mappings_data[key] = mapping.model_dump(mode='json')
-            
-            with open(mappings_file, 'w', encoding='utf-8') as f:
-                json.dump(mappings_data, f, indent=2, default=str)
-            
-            self._logger.debug("Saved persistent mappings", count=len(mappings))
-            return True
-            
-        except Exception as e:
-            self._logger.error("Failed to save persistent mappings", error=str(e))
             return False
     
     def list_sync_states(self) -> List[str]:
@@ -392,11 +208,11 @@ class StateManager:
             self._logger.error("Failed to cleanup old states", error=str(e))
             return 0
     
-    def get_latest_sync_state(self) -> Optional[SyncState]:
+    def get_latest_sync_state(self) -> Optional[EnhancedSyncState]:
         """Get the most recent sync state.
         
         Returns:
-            Latest SyncState instance or None
+            Latest EnhancedSyncState instance or None
         """
         sync_ids = self.list_sync_states()
         if not sync_ids:
@@ -439,3 +255,195 @@ class StateManager:
         except Exception as e:
             self._logger.error("Failed to create checkpoint", error=str(e))
             return False
+    
+    def track_managed_resource(
+        self,
+        resource_id: str,
+        resource_type: ResourceType,
+        braintrust_org: str,
+        created_by_sync: bool = False,
+        config: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Optional[ManagedResource]:
+        """Track a managed resource in enhanced state.
+        
+        Args:
+            resource_id: Unique resource ID
+            resource_type: Type of resource
+            braintrust_org: Braintrust organization
+            created_by_sync: Whether resource was created by sync
+            config: Configuration that created this resource
+            **kwargs: Additional resource metadata
+            
+        Returns:
+            ManagedResource instance
+        """
+        if not self._current_state:
+            return None
+        
+        return self._current_state.add_managed_resource(
+            resource_id=resource_id,
+            resource_type=resource_type,
+            braintrust_org=braintrust_org,
+            created_by_sync=created_by_sync,
+            config=config,
+            **kwargs
+        )
+    
+    def track_role_state(
+        self,
+        role_id: str,
+        role_name: str,
+        braintrust_org: str,
+        role_definition: Dict[str, Any],
+        created_by_sync: bool = False,
+    ) -> Optional[RoleState]:
+        """Track role state in enhanced tracking.
+        
+        Args:
+            role_id: Role ID
+            role_name: Role name
+            braintrust_org: Braintrust organization
+            role_definition: Role definition
+            created_by_sync: Whether role was created by sync
+            
+        Returns:
+            RoleState instance
+        """
+        if not self._current_state:
+            return None
+        
+        return self._current_state.add_role_state(
+            role_id=role_id,
+            role_name=role_name,
+            braintrust_org=braintrust_org,
+            role_definition=role_definition,
+            created_by_sync=created_by_sync,
+        )
+    
+    def track_acl_state(
+        self,
+        acl_id: str,
+        group_id: str,
+        group_name: str,
+        role_id: str,
+        role_name: str,
+        project_id: str,
+        project_name: str,
+        braintrust_org: str,
+        permissions: List[str],
+        assignment_rule: Optional[Dict[str, Any]] = None,
+        created_by_sync: bool = True,
+    ) -> Optional[ACLState]:
+        """Track ACL state in enhanced tracking.
+        
+        Args:
+            acl_id: ACL ID
+            group_id: Group ID
+            group_name: Group name
+            role_id: Role ID
+            role_name: Role name
+            project_id: Project ID
+            project_name: Project name
+            braintrust_org: Braintrust organization
+            permissions: List of permissions
+            assignment_rule: Assignment rule that created this ACL
+            created_by_sync: Whether ACL was created by sync
+            
+        Returns:
+            ACLState instance
+        """
+        if not self._current_state:
+            return None
+        
+        return self._current_state.add_acl_state(
+            acl_id=acl_id,
+            group_id=group_id,
+            group_name=group_name,
+            role_id=role_id,
+            role_name=role_name,
+            project_id=project_id,
+            project_name=project_name,
+            braintrust_org=braintrust_org,
+            permissions=permissions,
+            assignment_rule=assignment_rule,
+            created_by_sync=created_by_sync,
+        )
+    
+    def track_project(
+        self,
+        project_id: str,
+        project_name: str,
+        braintrust_org: str,
+        matched_patterns: Optional[List[str]] = None,
+    ) -> Optional[ProjectState]:
+        """Track discovered project in enhanced tracking.
+        
+        Args:
+            project_id: Project ID
+            project_name: Project name
+            braintrust_org: Braintrust organization
+            matched_patterns: Patterns that matched this project
+            
+        Returns:
+            ProjectState instance
+        """
+        if not self._current_state:
+            return None
+        
+        return self._current_state.track_project(
+            project_id=project_id,
+            project_name=project_name,
+            braintrust_org=braintrust_org,
+            matched_patterns=matched_patterns,
+        )
+    
+    def detect_drift(
+        self,
+        current_roles: List[Dict[str, Any]],
+        current_acls: List[Dict[str, Any]],
+        braintrust_org: str,
+    ) -> List[DriftWarning]:
+        """Detect drift between managed state and current state.
+        
+        Args:
+            current_roles: Current roles from Braintrust API
+            current_acls: Current ACLs from Braintrust API
+            braintrust_org: Braintrust organization
+            
+        Returns:
+            List of drift warnings
+        """
+        if not self._current_state:
+            return []
+        
+        return self._current_state.detect_drift(
+            current_roles=current_roles,
+            current_acls=current_acls,
+            braintrust_org=braintrust_org,
+        )
+    
+    def get_managed_resource_summary(self) -> Dict[str, Any]:
+        """Get summary of managed resources.
+        
+        Returns:
+            Summary dictionary
+        """
+        if not self._current_state:
+            return {"no_current_state": True}
+        
+        return self._current_state.get_managed_resource_summary()
+    
+    def cleanup_stale_resources(self, max_age_days: int = 30) -> int:
+        """Remove stale resources from enhanced state.
+        
+        Args:
+            max_age_days: Maximum age for resources
+            
+        Returns:
+            Number of resources cleaned up
+        """
+        if not self._current_state:
+            return 0
+        
+        return self._current_state.cleanup_stale_resources(max_age_days)

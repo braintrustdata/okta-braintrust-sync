@@ -217,6 +217,12 @@ class SyncExecutor:
             
             await self._finalize_execution(plan, progress, dry_run)
             
+            # Drift detection phase
+            progress.start_phase("drift_detection")
+            self._notify_progress(progress)
+            
+            await self._run_drift_detection(plan, progress)
+            
             # Mark as completed
             progress.start_phase("completed")
             progress.completed_at = datetime.now(timezone.utc)
@@ -520,6 +526,82 @@ class SyncExecutor:
         except Exception as e:
             progress.add_error(f"Finalization failed: {e}")
             self._logger.error("Failed to finalize execution", error=str(e))
+    
+    async def _run_drift_detection(
+        self,
+        plan: SyncPlan,
+        progress: ExecutionProgress,
+    ) -> None:
+        """Run drift detection for managed resources.
+        
+        Args:
+            plan: Executed sync plan
+            progress: Progress tracker
+        """
+        try:
+            self._logger.info("Starting drift detection")
+            
+            # Run drift detection for each organization
+            for org_name in plan.target_organizations:
+                if org_name not in self.braintrust_clients:
+                    continue
+                
+                client = self.braintrust_clients[org_name]
+                
+                try:
+                    # Get current state from Braintrust
+                    current_roles = await client.list_roles()
+                    current_acls = await client.list_org_acls(org_name=org_name, object_type="project")
+                    
+                    # Detect drift
+                    drift_warnings = self.state_manager.detect_drift(
+                        current_roles=current_roles,
+                        current_acls=current_acls,
+                        braintrust_org=org_name,
+                    )
+                    
+                    # Log drift warnings
+                    for warning in drift_warnings:
+                        progress.add_warning(
+                            f"Drift detected in {org_name}: {warning.drift_type} - {warning.details}"
+                        )
+                        
+                        self._logger.warning(
+                            "Resource drift detected",
+                            braintrust_org=org_name,
+                            resource_type=warning.resource_type,
+                            resource_id=warning.resource_id,
+                            drift_type=warning.drift_type,
+                            details=warning.details,
+                            severity=warning.severity,
+                        )
+                    
+                    if drift_warnings:
+                        self._logger.info(
+                            "Drift detection completed",
+                            braintrust_org=org_name,
+                            warnings_count=len(drift_warnings),
+                        )
+                    else:
+                        self._logger.debug(
+                            "No drift detected",
+                            braintrust_org=org_name,
+                        )
+                
+                except Exception as e:
+                    error_msg = f"Drift detection failed for {org_name}: {str(e)}"
+                    progress.add_error(error_msg)
+                    self._logger.error(
+                        "Drift detection error",
+                        braintrust_org=org_name,
+                        error=str(e),
+                    )
+            
+            self._logger.info("Drift detection phase completed")
+            
+        except Exception as e:
+            progress.add_error(f"Drift detection phase failed: {e}")
+            self._logger.error("Failed to run drift detection", error=str(e))
     
     def _notify_progress(self, progress: ExecutionProgress) -> None:
         """Notify progress callback if available.

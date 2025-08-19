@@ -14,6 +14,7 @@ from sync.config.role_project_models import (
     STANDARD_ROLES,
 )
 from sync.core.state import StateManager
+from sync.core.enhanced_state import ResourceType
 
 logger = structlog.get_logger(__name__)
 
@@ -182,6 +183,15 @@ class RoleProjectAssignmentManager:
                 existing_role = await client.get_role_by_name(role_def.name)
                 
                 if existing_role:
+                    # Track existing role in enhanced state
+                    self.state_manager.track_role_state(
+                        role_id=existing_role["id"],
+                        role_name=role_def.name,
+                        braintrust_org=client.org_name,
+                        role_definition=role_def.model_dump(),
+                        created_by_sync=False,  # Pre-existing role
+                    )
+                    
                     # Role exists - check if update is needed
                     if update_existing and self._role_needs_update(existing_role, role_def):
                         if not dry_run:
@@ -191,6 +201,15 @@ class RoleProjectAssignmentManager:
                                 description=role_def.description,
                             )
                             results["roles_updated"] += 1
+                            
+                            # Update tracking to reflect sync modification
+                            self.state_manager.track_role_state(
+                                role_id=existing_role["id"],
+                                role_name=role_def.name,
+                                braintrust_org=client.org_name,
+                                role_definition=role_def.model_dump(),
+                                created_by_sync=True,  # Now managed by sync
+                            )
                             
                         self._logger.info(
                             "Role updated" if not dry_run else "Role would be updated",
@@ -207,8 +226,18 @@ class RoleProjectAssignmentManager:
                     # Role doesn't exist - create if enabled
                     if auto_create:
                         if not dry_run:
-                            await client.create_role(role_def)
+                            created_role = await client.create_role(role_def)
                             results["roles_created"] += 1
+                            
+                            # Track newly created role
+                            if created_role and created_role.get("id"):
+                                self.state_manager.track_role_state(
+                                    role_id=created_role["id"],
+                                    role_name=role_def.name,
+                                    braintrust_org=client.org_name,
+                                    role_definition=role_def.model_dump(),
+                                    created_by_sync=True,  # Created by sync
+                                )
                             
                         self._logger.info(
                             "Role created" if not dry_run else "Role would be created",
@@ -323,6 +352,22 @@ class RoleProjectAssignmentManager:
                     braintrust_org=braintrust_org,
                 )
                 
+                # Track discovered projects in enhanced state
+                for project in projects:
+                    self.state_manager.track_project(
+                        project_id=project.get("id"),
+                        project_name=project.get("name"),
+                        braintrust_org=braintrust_org,
+                        matched_patterns=[
+                            pattern for pattern in [
+                                assignment.project_match.name_pattern,
+                                assignment.project_match.name_contains,
+                                assignment.project_match.name_starts_with,
+                                assignment.project_match.name_ends_with,
+                            ] if pattern
+                        ],
+                    )
+                
                 if not projects:
                     self._logger.warning(
                         "No projects matched for assignment",
@@ -337,6 +382,7 @@ class RoleProjectAssignmentManager:
                     group_name=assignment.group_name,
                     role_name=assignment.role_name,
                     projects=projects,
+                    assignment_rule=assignment.model_dump(),
                     dry_run=dry_run,
                 )
                 
@@ -522,7 +568,8 @@ class RoleProjectAssignmentManager:
         group_name: str,
         role_name: str,
         projects: List[Dict[str, Any]],
-        dry_run: bool,
+        assignment_rule: Optional[Dict[str, Any]] = None,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Create ACLs for a group-role-projects combination.
         
@@ -531,6 +578,7 @@ class RoleProjectAssignmentManager:
             group_name: Name of the group
             role_name: Name of the role
             projects: List of project objects
+            assignment_rule: Assignment rule that created this ACL
             dry_run: Whether to preview changes only
             
         Returns:
@@ -557,6 +605,31 @@ class RoleProjectAssignmentManager:
                 
                 if result.get("success"):
                     results["acls_created"] = result.get("project_count", 0)
+                    
+                    # Track created ACLs in enhanced state
+                    created_acls = result.get("created_acls", [])
+                    for acl_info in created_acls:
+                        if all(key in acl_info for key in ["acl_id", "group_id", "role_id", "project_id"]):
+                            # Get role details for permissions
+                            role = await client.get_role_by_name(role_name)
+                            permissions = []
+                            if role and role.get("member_permissions"):
+                                permissions = [p.get("permission") for p in role["member_permissions"]]
+                            
+                            self.state_manager.track_acl_state(
+                                acl_id=acl_info["acl_id"],
+                                group_id=acl_info["group_id"], 
+                                group_name=group_name,
+                                role_id=acl_info["role_id"],
+                                role_name=role_name,
+                                project_id=acl_info["project_id"],
+                                project_name=acl_info.get("project_name", ""),
+                                braintrust_org=client.org_name,
+                                permissions=permissions,
+                                assignment_rule=assignment_rule,
+                                created_by_sync=True,
+                            )
+                    
                     self._logger.info(
                         "Created ACLs for group-role-projects",
                         group_name=group_name,
