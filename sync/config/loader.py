@@ -3,7 +3,7 @@
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 import yaml
 from pydantic import ValidationError
@@ -13,12 +13,108 @@ from sync.config.models import SyncConfig
 
 class ConfigurationError(Exception):
     """Raised when configuration loading or validation fails."""
+
+
+class SecurityError(Exception):
+    """Raised when security validation fails."""
     pass
 
 
 class EnvironmentVariableError(ConfigurationError):
     """Raised when environment variable substitution fails."""
     pass
+
+
+# Security: Allowlist of permitted environment variables
+ALLOWED_ENV_VARS: Set[str] = {
+    # API Credentials
+    "OKTA_API_TOKEN",
+    "BRAINTRUST_API_KEY",
+    
+    # Organization Configuration
+    "BRAINTRUST_ORG_ID",
+    "BRAINTRUST_ORG_NAME",
+    "OKTA_DOMAIN",
+    
+    # Logging and Monitoring
+    "LOG_LEVEL",
+    "LOG_FORMAT",
+    "AUDIT_LOG_FILE",
+    
+    # Rate Limiting
+    "OKTA_RATE_LIMIT_PER_MINUTE",
+    "BRAINTRUST_RATE_LIMIT_PER_MINUTE",
+    
+    # Sync Configuration
+    "DRY_RUN",
+    "BATCH_SIZE",
+    "MAX_CONCURRENT_OPERATIONS",
+    
+    # State Management
+    "STATE_DIR",
+    "ENABLE_ENHANCED_TRACKING",
+    "ENABLE_DRIFT_DETECTION",
+    
+    # Security
+    "REQUIRE_HTTPS",
+    "VERIFY_SSL",
+    
+    # Webhook Configuration
+    "WEBHOOK_SECRET",
+    "WEBHOOK_PORT",
+    
+    # Common Environment Variables
+    "HOME",
+    "USER",
+    "PATH",
+    "PWD",
+    "SHELL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+}
+
+
+def _validate_env_var_name(var_name: str) -> None:
+    """Validate that an environment variable is allowed.
+    
+    Args:
+        var_name: Environment variable name to validate
+        
+    Raises:
+        SecurityError: If the environment variable is not in the allowlist
+    """
+    if var_name not in ALLOWED_ENV_VARS:
+        raise SecurityError(
+            f"Unauthorized environment variable '{var_name}' is not in allowlist. "
+            f"Allowed variables: {sorted(ALLOWED_ENV_VARS)}"
+        )
+
+
+def _sanitize_env_value(value: str) -> str:
+    """Sanitize environment variable value to prevent injection attacks.
+    
+    Args:
+        value: Raw environment variable value
+        
+    Returns:
+        Sanitized value safe for use in configuration
+    """
+    # Remove any potential YAML injection characters
+    sanitized = value.strip()
+    
+    # Prevent YAML injection by escaping special characters
+    dangerous_chars = ['${', '#{', '&', '*', '!', '|', '>', "'", '"', '`']
+    for char in dangerous_chars:
+        if char in sanitized:
+            # For now, we'll be strict and reject values with dangerous characters
+            # In production, you might want to escape them instead
+            raise SecurityError(
+                f"Environment variable contains potentially dangerous character '{char}'. "
+                "Values with special YAML characters are not allowed for security reasons."
+            )
+    
+    return sanitized
 
 
 class ConfigLoader:
@@ -95,13 +191,18 @@ class ConfigLoader:
             var_name = match.group(1)
             default_value = match.group(2)
             
+            # Security: Validate environment variable name against allowlist
+            _validate_env_var_name(var_name)
+            
             # Get environment variable value
             env_value = os.getenv(var_name)
             
             if env_value is not None:
-                return env_value
+                # Security: Sanitize environment variable value
+                return _sanitize_env_value(env_value)
             elif default_value is not None:
-                return default_value
+                # Security: Sanitize default value as well
+                return _sanitize_env_value(default_value)
             elif self.require_env_vars:
                 raise EnvironmentVariableError(
                     f"Required environment variable '{var_name}' is not set"

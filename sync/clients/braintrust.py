@@ -8,6 +8,7 @@ from braintrust_api import Braintrust
 from braintrust_api.types import Group, User
 from pydantic import SecretStr
 
+from sync.security.validation import validate_api_token, validate_url, validate_organization_name
 from sync.clients.exceptions import (
     APIError,
     BraintrustError,
@@ -41,6 +42,17 @@ class BraintrustClient:
             max_retries: Maximum retry attempts
             retry_delay_seconds: Initial retry delay
         """
+        # Validate API key format
+        token_value = api_key.get_secret_value()
+        if not validate_api_token(token_value, "braintrust"):
+            raise ValueError(
+                "Invalid Braintrust API token format. Token must be a valid UUID or secure token."
+            )
+        
+        # Validate API URL
+        if not validate_url(api_url, allowed_schemes=["https"]):
+            raise ValueError(f"Invalid API URL: {api_url}. Only HTTPS URLs are allowed.")
+        
         self.api_url = api_url
         self.timeout_seconds = timeout_seconds
         self.rate_limit_per_minute = rate_limit_per_minute
