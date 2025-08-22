@@ -37,12 +37,11 @@
 - Supports pattern-based project matching (regex, contains, starts/ends with)
 - Per-organization configuration with global defaults
 
-### Testing Commands
-- Run tests: `pytest`
-- Run specific test file: `pytest tests/test_file.py`
-- Run with coverage: `pytest --cov`
+### Dev Requirements
+1. Make sure that changes made to the planning phase first as the planning phase determines what happens in the apply phase.
 
-### Linting and Type Checking
-- Lint code: `ruff check .`
-- Fix linting issues: `ruff check . --fix`
-- Type check: `mypy sync/`
+### Syncing Workflow
+1. Cache resources from Okta and Braintrust to reduce network calls
+2. Check if resources (users, groups, roles, ACLs) already exist in the state and match what is retrieved from Okta based on the yaml config
+3. Create resources that don't exist in state but defined in the yaml, delete resources that are defined to be deleted by the yaml config.
+4. Plan overview that the user will say y/n before executing. 

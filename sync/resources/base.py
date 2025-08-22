@@ -452,25 +452,56 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                             reason="Mapped resource missing in Braintrust",
                         ))
                 else:
-                    # New resource - create
-                    if sync_rules.get('create_missing', True):
-                        plan_items.append(SyncPlanItem(
-                            okta_resource_id=okta_id,
-                            okta_resource_type=self.resource_type,
-                            okta_resource=getattr(okta_resource, 'data', {}),
-                            braintrust_org=braintrust_org,
-                            action=SyncAction.CREATE,
-                            reason="New resource from Okta",
-                        ))
+                    # No mapping in state - check if resource exists in Braintrust
+                    braintrust_resource = braintrust_resource_map.get(okta_id)
+                    
+                    if braintrust_resource:
+                        # Resource exists in Braintrust but not tracked in state
+                        # Check if updates are needed
+                        updates = await self.calculate_updates(okta_resource, braintrust_resource)
+                        braintrust_id = self._get_braintrust_resource_id(braintrust_resource)
+                        
+                        if updates:
+                            plan_items.append(SyncPlanItem(
+                                okta_resource_id=okta_id,
+                                okta_resource_type=self.resource_type,
+                                okta_resource=getattr(okta_resource, 'data', {}),
+                                braintrust_org=braintrust_org,
+                                action=SyncAction.UPDATE,
+                                reason=f"Untracked resource needs updates: {', '.join(updates.keys())}",
+                                existing_braintrust_id=braintrust_id,
+                                proposed_changes=updates,
+                            ))
+                        else:
+                            plan_items.append(SyncPlanItem(
+                                okta_resource_id=okta_id,
+                                okta_resource_type=self.resource_type,
+                                okta_resource=getattr(okta_resource, 'data', {}),
+                                braintrust_org=braintrust_org,
+                                action=SyncAction.SKIP,
+                                reason="Untracked resource is up to date",
+                                existing_braintrust_id=braintrust_id,
+                            ))
                     else:
-                        plan_items.append(SyncPlanItem(
-                            okta_resource_id=okta_id,
-                            okta_resource_type=self.resource_type,
-                            okta_resource=getattr(okta_resource, 'data', {}),
-                            braintrust_org=braintrust_org,
-                            action=SyncAction.SKIP,
-                            reason="Creation disabled in sync rules",
-                        ))
+                        # New resource - create
+                        if sync_rules.get('create_missing', True):
+                            plan_items.append(SyncPlanItem(
+                                okta_resource_id=okta_id,
+                                okta_resource_type=self.resource_type,
+                                okta_resource=getattr(okta_resource, 'data', {}),
+                                braintrust_org=braintrust_org,
+                                action=SyncAction.CREATE,
+                                reason="New resource from Okta",
+                            ))
+                        else:
+                            plan_items.append(SyncPlanItem(
+                                okta_resource_id=okta_id,
+                                okta_resource_type=self.resource_type,
+                                okta_resource=getattr(okta_resource, 'data', {}),
+                                braintrust_org=braintrust_org,
+                                action=SyncAction.SKIP,
+                                reason="Creation disabled in sync rules",
+                            ))
             
             self._logger.debug(
                 "Generated organization sync plan",
@@ -551,6 +582,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                         action=SyncAction.DELETE,
                         reason=f"Resource exists in Braintrust but not in Okta (managed by sync tool)",
                         existing_braintrust_id=bt_resource_id,
+                        braintrust_resource_id=bt_resource_id,  # Set this for DELETE operations
                     ))
             
             self._logger.debug(

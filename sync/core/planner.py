@@ -649,6 +649,43 @@ class SyncPlanner:
                 # Projects are already cached by comprehensive cache initialization
                 all_projects = await client.list_projects(org_name=org_name)
                 
+                # Fetch existing ACLs for all projects to filter out duplicates during planning
+                existing_acl_keys = set()
+                total_existing_acls = 0
+                
+                for project in all_projects:
+                    project_id = project.get('id')
+                    if project_id:
+                        try:
+                            project_acls = await client.list_acls(
+                                object_type="project", 
+                                object_id=project_id
+                            )
+                            total_existing_acls += len(project_acls)
+                            
+                            for acl in project_acls:
+                                key = (
+                                    acl.get("object_id"),
+                                    acl.get("group_id"), 
+                                    acl.get("role_id")
+                                )
+                                existing_acl_keys.add(key)
+                        except Exception as e:
+                            self._logger.warning(
+                                "Failed to fetch ACLs for project during planning",
+                                project_id=project_id,
+                                project_name=project.get("name"),
+                                org_name=org_name,
+                                error=str(e),
+                            )
+                
+                self._logger.debug(
+                    "Found existing ACLs for planning",
+                    org_name=org_name,
+                    existing_count=total_existing_acls,
+                    projects_checked=len(all_projects),
+                )
+                
                 # Process each group assignment to generate ACL items
                 for assignment in config.group_assignments:
                     if not assignment.enabled:
@@ -662,32 +699,73 @@ class SyncPlanner:
                         cached_projects=all_projects,  # Pass cached projects
                     )
                     
-                    # Create ACL plan item for each project
+                    # Create ACL plan item for each project, but only if it doesn't already exist
                     for project in projects:
-                        acl_items.append(SyncPlanItem(
-                            okta_resource_id=f"acl-{assignment.group_name}-{assignment.role_name}-{project.get('id')}-{org_name}",
-                            okta_resource_type="acl",
-                            okta_resource={
-                                "group_name": assignment.group_name,
-                                "role_name": assignment.role_name,
-                                "project_name": project.get("name"),
-                                "project_id": project.get("id"),
-                            },
-                            braintrust_org=org_name,
-                            action=SyncAction.CREATE,
-                            reason=f"Assign group '{assignment.group_name}' role '{assignment.role_name}' on project '{project.get('name')}'",
-                            dependencies=[
-                                f"group-{assignment.group_name}-{org_name}",  # Depends on group existing
-                                f"role-{assignment.role_name}-{org_name}",   # Depends on role existing
-                            ],
-                            metadata={
-                                "group_name": assignment.group_name,
-                                "role_name": assignment.role_name,
-                                "project_name": project.get("name"),
-                                "priority": assignment.priority,
-                                "assignment_rule": assignment.model_dump(),
-                            }
-                        ))
+                        # Get group and role IDs to check if ACL already exists
+                        try:
+                            group = await client.find_group_by_name_cached(assignment.group_name)
+                            role = await client.get_role_by_name_cached(assignment.role_name)
+                            
+                            if not group or not role:
+                                self._logger.warning(
+                                    "Skipping ACL planning - group or role not found",
+                                    group_name=assignment.group_name,
+                                    role_name=assignment.role_name,
+                                    org_name=org_name,
+                                )
+                                continue
+                            
+                            group_id = group.get('id') if isinstance(group, dict) else getattr(group, 'id')
+                            role_id = role.get('id')
+                            project_id = project.get('id')
+                            
+                            # Check if this ACL already exists
+                            acl_key = (project_id, group_id, role_id)
+                            if acl_key in existing_acl_keys:
+                                self._logger.debug(
+                                    "Skipping existing ACL during planning",
+                                    group_name=assignment.group_name,
+                                    role_name=assignment.role_name,
+                                    project_name=project.get("name"),
+                                    org_name=org_name,
+                                )
+                                continue
+                            
+                            # ACL doesn't exist, add it to the plan
+                            acl_items.append(SyncPlanItem(
+                                okta_resource_id=f"acl-{assignment.group_name}-{assignment.role_name}-{project.get('id')}-{org_name}",
+                                okta_resource_type="acl",
+                                okta_resource={
+                                    "group_name": assignment.group_name,
+                                    "role_name": assignment.role_name,
+                                    "project_name": project.get("name"),
+                                    "project_id": project.get("id"),
+                                },
+                                braintrust_org=org_name,
+                                action=SyncAction.CREATE,
+                                reason=f"Assign group '{assignment.group_name}' role '{assignment.role_name}' on project '{project.get('name')}'",
+                                dependencies=[
+                                    f"group-{assignment.group_name}-{org_name}",  # Depends on group existing
+                                    f"role-{assignment.role_name}-{org_name}",   # Depends on role existing
+                                ],
+                                metadata={
+                                    "group_name": assignment.group_name,
+                                    "role_name": assignment.role_name,
+                                    "project_name": project.get("name"),
+                                    "priority": assignment.priority,
+                                    "assignment_rule": assignment.model_dump(),
+                                }
+                            ))
+                            
+                        except Exception as e:
+                            self._logger.warning(
+                                "Error checking ACL existence during planning",
+                                group_name=assignment.group_name,
+                                role_name=assignment.role_name,
+                                project_name=project.get("name"),
+                                org_name=org_name,
+                                error=str(e),
+                            )
                         
             except Exception as e:
                 self._logger.warning(
