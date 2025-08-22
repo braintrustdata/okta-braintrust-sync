@@ -92,6 +92,7 @@ class SyncExecutor:
         state_manager: StateManager,
         audit_logger: Optional[AuditLogger] = None,
         progress_callback: Optional[Callable[[ExecutionProgress], None]] = None,
+        config: Optional["SyncConfig"] = None,
     ) -> None:
         """Initialize sync executor.
         
@@ -101,12 +102,14 @@ class SyncExecutor:
             state_manager: State manager for tracking sync operations
             audit_logger: Optional audit logger for comprehensive audit trails
             progress_callback: Optional callback for progress updates
+            config: Optional sync configuration for role/ACL management
         """
         self.okta_client = okta_client
         self.braintrust_clients = braintrust_clients
         self.state_manager = state_manager
         self.audit_logger = audit_logger or AuditLogger()
         self.progress_callback = progress_callback
+        self.config = config
         
         # Initialize resource syncers
         self.user_syncer = UserSyncer(
@@ -211,9 +214,17 @@ class SyncExecutor:
                     max_concurrent=max_concurrent_operations,
                 )
             
-            # TODO: Execute role and ACL sync phases
-            # Role and ACL syncers are not yet implemented
-            # For now, roles and ACLs are handled differently
+            # Execute role and ACL sync phases using RoleProjectAssignmentManager
+            if plan.role_items or plan.acl_items:
+                progress.start_phase("roles_and_acls")
+                self._notify_progress(progress)
+                
+                await self._execute_role_acl_phase(
+                    plan=plan,
+                    progress=progress,
+                    dry_run=dry_run,
+                    continue_on_error=continue_on_error,
+                )
             # Finalization phase
             progress.start_phase("finalizing")
             self._notify_progress(progress)
@@ -603,6 +614,140 @@ class SyncExecutor:
         except Exception as e:
             progress.add_error(f"Drift detection phase failed: {e}")
             self._logger.error("Failed to run drift detection", error=str(e))
+    
+    async def _execute_role_acl_phase(
+        self,
+        plan: SyncPlan,
+        progress: ExecutionProgress,
+        dry_run: bool,
+        continue_on_error: bool,
+    ) -> None:
+        """Execute role and ACL sync phase using RoleProjectAssignmentManager.
+        
+        Args:
+            plan: Sync plan with role and ACL items
+            progress: Progress tracker
+            dry_run: Whether to perform dry run
+            continue_on_error: Whether to continue on error
+        """
+        from sync.resources.role_project_assignment import RoleProjectAssignmentManager
+        from sync.config.role_project_models import RoleProjectConfig
+        
+        self._logger.info(
+            "Starting role and ACL sync phase",
+            role_items=len(plan.role_items),
+            acl_items=len(plan.acl_items),
+            dry_run=dry_run,
+        )
+        
+        try:
+            # Initialize role-project assignment manager
+            role_project_configs = {}
+            
+            # Extract role-project configs per organization from sync config
+            if self.config and hasattr(self.config, 'role_project_assignment') and self.config.role_project_assignment:
+                for org_name in plan.target_organizations:
+                    if org_name in self.braintrust_clients:
+                        if hasattr(self.config.role_project_assignment, 'global_config'):
+                            role_project_configs[org_name] = self.config.role_project_assignment.global_config
+                        else:
+                            role_project_configs[org_name] = None
+            else:
+                self._logger.warning("No role-project assignment configuration found")
+                return  # Skip role/ACL phase if no configuration
+            
+            role_manager = RoleProjectAssignmentManager(
+                braintrust_clients=self.braintrust_clients,
+                state_manager=self.state_manager,
+                role_project_configs=role_project_configs,
+            )
+            
+            # Count role/ACL items per organization from the plan
+            org_item_counts = {}
+            for org_name in plan.target_organizations:
+                role_count = len([item for item in plan.role_items if item.braintrust_org == org_name])
+                acl_count = len([item for item in plan.acl_items if item.braintrust_org == org_name])
+                org_item_counts[org_name] = role_count + acl_count
+                
+                self._logger.debug(
+                    "Counted role/ACL items for organization",
+                    braintrust_org=org_name,
+                    role_items=role_count,
+                    acl_items=acl_count,
+                    total_items=org_item_counts[org_name],
+                )
+            
+            # Execute role and ACL sync for each organization
+            for org_name in plan.target_organizations:
+                org_expected_items = org_item_counts[org_name]
+                if org_expected_items == 0:
+                    self._logger.debug("No role/ACL items for organization", braintrust_org=org_name)
+                    continue
+                
+                try:
+                    self._logger.debug(
+                        "Executing role and ACL sync for organization",
+                        braintrust_org=org_name,
+                        expected_items=org_expected_items,
+                        dry_run=dry_run,
+                    )
+                    
+                    result = await role_manager.sync_roles_and_projects(
+                        braintrust_org=org_name,
+                        dry_run=dry_run,
+                    )
+                    
+                    # Update progress based on plan items, not manager results
+                    if result.get("success", True):  # Default to success if not specified
+                        # Credit this org with completing all its planned role/ACL items
+                        progress.completed_items += org_expected_items
+                        progress.update_org_progress(org_name, "completed", org_expected_items)
+                        
+                        self._logger.info(
+                            "Successfully executed role and ACL sync",
+                            braintrust_org=org_name,
+                            planned_items=org_expected_items,
+                            roles_processed=result.get("roles_processed", 0),
+                            acls_created=result.get("acls_created", 0),
+                        )
+                    else:
+                        # Mark all planned items for this org as failed
+                        progress.failed_items += org_expected_items
+                        progress.update_org_progress(org_name, "failed", org_expected_items)
+                        error_msg = result.get("error", "Unknown error")
+                        progress.add_error(f"Role/ACL sync failed for {org_name}: {error_msg}")
+                        
+                        if not continue_on_error:
+                            raise Exception(f"Role/ACL sync failed for {org_name}: {error_msg}")
+                
+                except Exception as e:
+                    error_msg = f"Role/ACL sync failed for {org_name}: {str(e)}"
+                    progress.add_error(error_msg)
+                    progress.failed_items += org_expected_items
+                    progress.update_org_progress(org_name, "failed", org_expected_items)
+                    
+                    self._logger.error(
+                        "Role and ACL sync error",
+                        braintrust_org=org_name,
+                        planned_items=org_expected_items,
+                        error=str(e),
+                    )
+                    
+                    if not continue_on_error:
+                        raise
+            
+            self._logger.info(
+                "Completed role and ACL sync phase",
+                total_orgs=len(plan.target_organizations),
+                role_items=len(plan.role_items),
+                acl_items=len(plan.acl_items),
+            )
+            
+        except Exception as e:
+            progress.add_error(f"Role and ACL sync phase failed: {e}")
+            self._logger.error("Failed to execute role and ACL sync phase", error=str(e))
+            if not continue_on_error:
+                raise
     
     def _notify_progress(self, progress: ExecutionProgress) -> None:
         """Notify progress callback if available.

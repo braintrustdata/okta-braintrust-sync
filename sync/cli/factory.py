@@ -277,4 +277,5 @@ class ComponentFactory:
             braintrust_clients=braintrust_clients,
             state_manager=state_manager,
             audit_logger=audit_logger,
+            config=config,
         )
