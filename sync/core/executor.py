@@ -691,48 +691,102 @@ class SyncExecutor:
                     total_items=org_item_counts[org_name],
                 )
             
-            # Execute role and ACL sync for each organization
+            # Execute role and ACL items individually based on the plan
             for org_name in plan.target_organizations:
-                org_expected_items = org_item_counts[org_name]
+                org_role_items = [item for item in plan.role_items if item.braintrust_org == org_name]
+                org_acl_items = [item for item in plan.acl_items if item.braintrust_org == org_name]
+                org_expected_items = len(org_role_items) + len(org_acl_items)
+                
                 if org_expected_items == 0:
                     self._logger.debug("No role/ACL items for organization", braintrust_org=org_name)
                     continue
                 
                 try:
-                    self._logger.debug(
-                        "Executing role and ACL sync for organization",
+                    self._logger.info(
+                        "Executing planned role and ACL items for organization",
                         braintrust_org=org_name,
-                        expected_items=org_expected_items,
+                        role_items=len(org_role_items),
+                        acl_items=len(org_acl_items),
+                        total_items=org_expected_items,
                         dry_run=dry_run,
                     )
                     
-                    result = await role_manager.sync_roles_and_projects(
-                        braintrust_org=org_name,
-                        dry_run=dry_run,
-                    )
+                    client = self.braintrust_clients[org_name]
+                    successful_items = 0
+                    failed_items = 0
                     
-                    # Update progress based on plan items, not manager results
-                    if result.get("success", True):  # Default to success if not specified
-                        # Credit this org with completing all its planned role/ACL items
-                        progress.completed_items += org_expected_items
-                        progress.update_org_progress(org_name, "completed", org_expected_items)
-                        
-                        self._logger.info(
-                            "Successfully executed role and ACL sync",
-                            braintrust_org=org_name,
-                            planned_items=org_expected_items,
-                            roles_processed=result.get("roles_processed", 0),
-                            acls_created=result.get("acls_created", 0),
-                        )
-                    else:
-                        # Mark all planned items for this org as failed
-                        progress.failed_items += org_expected_items
-                        progress.update_org_progress(org_name, "failed", org_expected_items)
-                        error_msg = result.get("error", "Unknown error")
-                        progress.add_error(f"Role/ACL sync failed for {org_name}: {error_msg}")
-                        
-                        if not continue_on_error:
-                            raise Exception(f"Role/ACL sync failed for {org_name}: {error_msg}")
+                    # Execute role items first (ACLs may depend on roles)
+                    for role_item in org_role_items:
+                        try:
+                            if not dry_run:
+                                role_result = await self._execute_role_item(client, role_item)
+                                if role_result.get("success", False):
+                                    successful_items += 1
+                                else:
+                                    failed_items += 1
+                                    self._logger.warning(
+                                        "Role item execution failed",
+                                        role_name=role_item.okta_resource.get("name"),
+                                        error=role_result.get("error", "Unknown error")
+                                    )
+                            else:
+                                successful_items += 1  # Count as success in dry run
+                                
+                        except Exception as e:
+                            failed_items += 1
+                            self._logger.error(
+                                "Error executing role item",
+                                role_name=role_item.okta_resource.get("name"),
+                                error=str(e)
+                            )
+                            if not continue_on_error:
+                                raise
+                    
+                    # Execute ACL items
+                    for acl_item in org_acl_items:
+                        try:
+                            if not dry_run:
+                                acl_result = await self._execute_acl_item(client, acl_item)
+                                if acl_result.get("success", False):
+                                    successful_items += 1
+                                else:
+                                    failed_items += 1
+                                    self._logger.warning(
+                                        "ACL item execution failed",
+                                        group_name=acl_item.okta_resource.get("group_name"),
+                                        role_name=acl_item.okta_resource.get("role_name"),
+                                        project_name=acl_item.okta_resource.get("project_name"),
+                                        error=acl_result.get("error", "Unknown error")
+                                    )
+                            else:
+                                successful_items += 1  # Count as success in dry run
+                                
+                        except Exception as e:
+                            failed_items += 1
+                            self._logger.error(
+                                "Error executing ACL item",
+                                group_name=acl_item.okta_resource.get("group_name"),
+                                role_name=acl_item.okta_resource.get("role_name"),
+                                project_name=acl_item.okta_resource.get("project_name"),
+                                error=str(e)
+                            )
+                            if not continue_on_error:
+                                raise
+                    
+                    # Update progress
+                    progress.completed_items += successful_items
+                    progress.failed_items += failed_items
+                    progress.update_org_progress(org_name, "completed", successful_items)
+                    if failed_items > 0:
+                        progress.update_org_progress(org_name, "failed", failed_items)
+                    
+                    self._logger.info(
+                        "Completed planned role and ACL execution for organization",
+                        braintrust_org=org_name,
+                        successful_items=successful_items,
+                        failed_items=failed_items,
+                        total_items=org_expected_items,
+                    )
                 
                 except Exception as e:
                     error_msg = f"Role/ACL sync failed for {org_name}: {str(e)}"
@@ -854,3 +908,138 @@ class SyncExecutor:
         except Exception as e:
             self._logger.error("Failed to get execution stats", error=str(e))
             return {"error": f"Failed to get stats: {e}"}
+    
+    async def _execute_role_item(self, client: "BraintrustClient", role_item: "SyncPlanItem") -> Dict[str, Any]:
+        """Execute a single role creation/update item.
+        
+        Args:
+            client: Braintrust client for the organization
+            role_item: Role sync plan item to execute
+            
+        Returns:
+            Result dictionary with success status and any errors
+        """
+        try:
+            # Extract role definition from the plan item
+            role_def = role_item.okta_resource
+            role_name = role_def.get("name")
+            
+            self._logger.debug(
+                "Executing role creation/update",
+                role_name=role_name,
+                action=role_item.action,
+                braintrust_org=role_item.braintrust_org
+            )
+            
+            if role_item.action == SyncAction.CREATE:
+                # Create new role
+                result = await client.create_role(
+                    name=role_name,
+                    description=role_def.get("description", ""),
+                    member_permissions=role_def.get("member_permissions", [])
+                )
+                return {
+                    "success": True,
+                    "action": "created",
+                    "role_id": result.get("id"),
+                    "role_name": role_name
+                }
+                
+            elif role_item.action == SyncAction.UPDATE:
+                # Update existing role
+                result = await client.update_role(
+                    role_id=role_item.braintrust_resource_id,
+                    name=role_name,
+                    description=role_def.get("description", ""),
+                    member_permissions=role_def.get("member_permissions", [])
+                )
+                return {
+                    "success": True,
+                    "action": "updated", 
+                    "role_id": role_item.braintrust_resource_id,
+                    "role_name": role_name
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unsupported role action: {role_item.action}"
+                }
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to execute role item: {str(e)}",
+                "role_name": role_def.get("name") if "role_def" in locals() else "unknown"
+            }
+    
+    async def _execute_acl_item(self, client: "BraintrustClient", acl_item: "SyncPlanItem") -> Dict[str, Any]:
+        """Execute a single ACL creation/update item.
+        
+        Args:
+            client: Braintrust client for the organization
+            acl_item: ACL sync plan item to execute
+            
+        Returns:
+            Result dictionary with success status and any errors
+        """
+        try:
+            # Extract ACL details from the plan item
+            acl_def = acl_item.okta_resource
+            group_name = acl_def.get("group_name")
+            role_name = acl_def.get("role_name")  
+            project_name = acl_def.get("project_name")
+            
+            self._logger.debug(
+                "Executing ACL creation/update",
+                group_name=group_name,
+                role_name=role_name,
+                project_name=project_name,
+                action=acl_item.action,
+                braintrust_org=acl_item.braintrust_org
+            )
+            
+            if acl_item.action == SyncAction.CREATE:
+                # Create new ACL by assigning group role to project
+                result = await client.assign_group_role_to_projects(
+                    group_name=group_name,
+                    role_name=role_name,
+                    project_names=[project_name]
+                )
+                return {
+                    "success": True,
+                    "action": "created",
+                    "group_name": group_name,
+                    "role_name": role_name,
+                    "project_name": project_name,
+                    "result": result
+                }
+                
+            elif acl_item.action == SyncAction.UPDATE:
+                # Update existing ACL (this might involve removing old ACL and creating new one)
+                result = await client.assign_group_role_to_projects(
+                    group_name=group_name,
+                    role_name=role_name,
+                    project_names=[project_name]
+                )
+                return {
+                    "success": True,
+                    "action": "updated",
+                    "group_name": group_name,
+                    "role_name": role_name,
+                    "project_name": project_name,
+                    "result": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unsupported ACL action: {acl_item.action}"
+                }
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to execute ACL item: {str(e)}",
+                "group_name": acl_def.get("group_name") if "acl_def" in locals() else "unknown",
+                "role_name": acl_def.get("role_name") if "acl_def" in locals() else "unknown",
+                "project_name": acl_def.get("project_name") if "acl_def" in locals() else "unknown"
+            }

@@ -353,7 +353,7 @@ class SyncPlanner:
             
             # Generate ACL sync plan (depends on groups and roles)
             if "acl" in resource_types:
-                acl_items = await self._generate_acl_plan(target_organizations)
+                acl_items = await self._generate_acl_plan(target_organizations, plan)
                 plan.add_items(acl_items, "acl")
                 
                 self._logger.debug(
@@ -606,6 +606,7 @@ class SyncPlanner:
     async def _generate_acl_plan(
         self,
         target_organizations: List[str],
+        current_plan: 'SyncPlan',
     ) -> List[SyncPlanItem]:
         """Generate sync plan for ACLs based on group-role-project assignments.
         
@@ -703,8 +704,29 @@ class SyncPlanner:
                     for project in projects:
                         # Get group and role IDs to check if ACL already exists
                         try:
+                            # Check for existing group first
                             group = await client.find_group_by_name_cached(assignment.group_name)
+                            
+                            # If group doesn't exist, check if it will be created in this sync
+                            if not group:
+                                self._logger.info(
+                                    "Group not found in cache, checking plan",
+                                    group_name=assignment.group_name,
+                                    org_name=org_name
+                                )
+                                group = self._find_group_in_plan(current_plan, assignment.group_name, org_name)
+                                if group:
+                                    self._logger.info(
+                                        "Found group in plan",
+                                        group_name=assignment.group_name,
+                                        org_name=org_name
+                                    )
+                            
                             role = await client.get_role_by_name_cached(assignment.role_name)
+                            
+                            # If role doesn't exist, check if it will be created in this sync
+                            if not role:
+                                role = self._find_role_in_plan(current_plan, assignment.role_name, org_name)
                             
                             if not group or not role:
                                 self._logger.warning(
@@ -712,11 +734,25 @@ class SyncPlanner:
                                     group_name=assignment.group_name,
                                     role_name=assignment.role_name,
                                     org_name=org_name,
+                                    group_found=bool(group),
+                                    role_found=bool(role),
                                 )
                                 continue
                             
-                            group_id = group.get('id') if isinstance(group, dict) else getattr(group, 'id')
-                            role_id = role.get('id')
+                            # Handle both existing and planned resources
+                            if isinstance(group, dict):
+                                group_id = group.get('id')
+                                group_is_planned = group.get('planned', False)
+                            else:
+                                group_id = getattr(group, 'id')
+                                group_is_planned = False
+                            
+                            if isinstance(role, dict):
+                                role_id = role.get('id')
+                                role_is_planned = role.get('planned', False)
+                            else:
+                                role_id = getattr(role, 'id')
+                                role_is_planned = False
                             project_id = project.get('id')
                             
                             # Check if this ACL already exists
@@ -732,6 +768,16 @@ class SyncPlanner:
                                 continue
                             
                             # ACL doesn't exist, add it to the plan
+                            dependencies = []
+                            
+                            # Add dependency on group if it's planned to be created
+                            if group_is_planned:
+                                dependencies.append(f"group-{assignment.group_name}-{org_name}")
+                            
+                            # Add dependency on role if it's planned to be created
+                            if role_is_planned:
+                                dependencies.append(f"role-{assignment.role_name}-{org_name}")
+                            
                             acl_items.append(SyncPlanItem(
                                 okta_resource_id=f"acl-{assignment.group_name}-{assignment.role_name}-{project.get('id')}-{org_name}",
                                 okta_resource_type="acl",
@@ -744,16 +790,15 @@ class SyncPlanner:
                                 braintrust_org=org_name,
                                 action=SyncAction.CREATE,
                                 reason=f"Assign group '{assignment.group_name}' role '{assignment.role_name}' on project '{project.get('name')}'",
-                                dependencies=[
-                                    f"group-{assignment.group_name}-{org_name}",  # Depends on group existing
-                                    f"role-{assignment.role_name}-{org_name}",   # Depends on role existing
-                                ],
+                                dependencies=dependencies,
                                 metadata={
                                     "group_name": assignment.group_name,
                                     "role_name": assignment.role_name,
                                     "project_name": project.get("name"),
                                     "priority": assignment.priority,
                                     "assignment_rule": assignment.model_dump(),
+                                    "group_planned": group_is_planned,
+                                    "role_planned": role_is_planned,
                                 }
                             ))
                             
@@ -781,6 +826,103 @@ class SyncPlanner:
         )
         
         return acl_items
+    
+    def _find_group_in_plan(self, plan: 'SyncPlan', group_name: str, org_name: str) -> Optional[Dict[str, Any]]:
+        """Find a group that will be created/updated in the current sync plan.
+        
+        Args:
+            plan: Current sync plan
+            group_name: Name of the group to find
+            org_name: Braintrust organization name
+            
+        Returns:
+            Group data if found in plan, None otherwise
+        """
+        # Check if this group will be created/updated in the current sync plan
+        
+        for group_item in plan.group_items:
+            if (group_item.braintrust_org == org_name and 
+                group_item.action in [SyncAction.CREATE, SyncAction.UPDATE]):
+                # Check if this is the group we're looking for
+                group_data = group_item.okta_resource
+                
+                # Try multiple ways to get the group name from the data structure
+                group_data_name = None
+                if isinstance(group_data, dict):
+                    # Try common dict keys for group names
+                    group_data_name = (
+                        group_data.get('name') or 
+                        group_data.get('displayName') or 
+                        group_data.get('profile', {}).get('name') or
+                        group_data.get('profile', {}).get('displayName')
+                    )
+                elif hasattr(group_data, 'name'):
+                    group_data_name = group_data.name
+                elif hasattr(group_data, 'displayName'):
+                    group_data_name = group_data.displayName
+                elif hasattr(group_data, 'profile'):
+                    profile = group_data.profile
+                    if hasattr(profile, 'name'):
+                        group_data_name = profile.name
+                    elif hasattr(profile, 'displayName'):
+                        group_data_name = profile.displayName
+                
+                # Debug: Log what we're comparing
+                self._logger.debug(
+                    "Comparing group names in plan",
+                    searching_for=group_name,
+                    found_in_data=group_data_name,
+                    data_type=type(group_data).__name__,
+                    org_name=org_name,
+                    action=group_item.action,
+                    matches=group_data_name == group_name
+                )
+                
+                if group_data_name == group_name:
+                    # Return a mock group object with an ID for ACL planning
+                    self._logger.debug(
+                        "Successfully found group in plan",
+                        group_name=group_name,
+                        org_name=org_name
+                    )
+                    return {
+                        'id': f"planned-group-{group_name}-{org_name}",
+                        'name': group_name,
+                        'planned': True
+                    }
+        
+        self._logger.debug(
+            "Group not found in any plan items",
+            group_name=group_name,
+            org_name=org_name,
+            total_group_items=len(plan.group_items)
+        )
+        return None
+    
+    def _find_role_in_plan(self, plan: 'SyncPlan', role_name: str, org_name: str) -> Optional[Dict[str, Any]]:
+        """Find a role that will be created/updated in the current sync plan.
+        
+        Args:
+            plan: Current sync plan
+            role_name: Name of the role to find
+            org_name: Braintrust organization name
+            
+        Returns:
+            Role data if found in plan, None otherwise
+        """
+        for role_item in plan.role_items:
+            if (role_item.braintrust_org == org_name and 
+                role_item.action in [SyncAction.CREATE, SyncAction.UPDATE]):
+                # Check if this is the role we're looking for
+                role_data = role_item.okta_resource
+                if isinstance(role_data, dict) and role_data.get('name') == role_name:
+                    # Return a mock role object with an ID for ACL planning
+                    return {
+                        'id': f"planned-role-{role_name}-{org_name}",
+                        'name': role_name,
+                        'planned': True
+                    }
+        return None
     
     def _estimate_duration(self, plan: SyncPlan) -> float:
         """Estimate sync plan execution duration in minutes.
