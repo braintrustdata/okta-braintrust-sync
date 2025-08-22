@@ -178,8 +178,8 @@ class RoleProjectAssignmentManager:
             try:
                 results["roles_processed"] += 1
                 
-                # Check if role already exists
-                existing_role = await client.get_role_by_name(role_def.name)
+                # Check if role already exists (using cache for performance)
+                existing_role = await client.get_role_by_name_cached(role_def.name)
                 
                 if existing_role:
                     # Track existing role in enhanced state
@@ -333,6 +333,29 @@ class RoleProjectAssignmentManager:
             reverse=True
         )
         
+        # ========== Optimization: Cache project list ==========
+        # Fetch all projects once to avoid redundant API calls
+        try:
+            all_projects = await client.list_projects(org_name=braintrust_org)
+            self._logger.debug(
+                "Cached projects for assignment processing",
+                braintrust_org=braintrust_org,
+                total_projects=len(all_projects),
+            )
+        except Exception as e:
+            self._logger.error(
+                "Failed to fetch projects for caching",
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            results["assignment_errors"].append(f"Failed to fetch projects: {str(e)}")
+            return results
+        
+        # ========== Optimization: Batch all ACL operations ==========
+        # Collect all ACL entries from all assignments, then batch them into a single API call
+        all_acl_entries = []
+        assignment_metadata = []  # Track which ACLs belong to which assignments
+        
         for assignment in sorted_assignments:
             try:
                 results["assignments_processed"] += 1
@@ -344,11 +367,12 @@ class RoleProjectAssignmentManager:
                     priority=assignment.priority,
                 )
                 
-                # Find matching projects
+                # Find matching projects using cached project list
                 projects = await self._find_matching_projects(
                     client=client,
                     project_match=assignment.project_match,
                     braintrust_org=braintrust_org,
+                    cached_projects=all_projects,  # Pass cached projects
                 )
                 
                 # Track discovered projects in enhanced state
@@ -375,20 +399,32 @@ class RoleProjectAssignmentManager:
                     )
                     continue
                 
-                # Create ACLs for the group-role-projects combination
-                acl_result = await self._create_group_role_acls(
+                # Build ACL entries for this assignment (don't create them yet)
+                acl_data = await self._prepare_acl_entries(
                     client=client,
                     group_name=assignment.group_name,
                     role_name=assignment.role_name,
                     projects=projects,
                     assignment_rule=assignment.model_dump(),
-                    dry_run=dry_run,
                 )
                 
-                results["acls_created"] += acl_result.get("acls_created", 0)
-                
-                if acl_result.get("errors"):
-                    results["assignment_errors"].extend(acl_result["errors"])
+                if acl_data.get("success"):
+                    # Add ACL entries to the batch
+                    acl_entries = acl_data.get("acl_entries", [])
+                    all_acl_entries.extend(acl_entries)
+                    
+                    # Track metadata for state management later
+                    assignment_metadata.append({
+                        "assignment": assignment,
+                        "projects": projects,
+                        "group_id": acl_data.get("group_id"),
+                        "role_id": acl_data.get("role_id"),
+                        "acl_count": len(acl_entries),
+                        "acl_start_index": len(all_acl_entries) - len(acl_entries),
+                    })
+                else:
+                    error_msg = acl_data.get("error", "Unknown error preparing ACLs")
+                    results["assignment_errors"].append(error_msg)
                 
             except Exception as e:
                 error_msg = (
@@ -398,13 +434,186 @@ class RoleProjectAssignmentManager:
                 self._logger.error(error_msg)
                 results["assignment_errors"].append(error_msg)
         
+        # ========== Execute batch ACL creation ==========
+        if all_acl_entries and not dry_run:
+            try:
+                self._logger.info(
+                    "Creating ACLs in batch",
+                    total_acls=len(all_acl_entries),
+                    assignments_count=len(assignment_metadata),
+                )
+                
+                # Single batch API call for all ACLs
+                batch_result = await client.batch_update_acls(add_acls=all_acl_entries)
+                
+                if batch_result:
+                    added_acls = batch_result.get("added_acls", [])
+                    results["acls_created"] = len(added_acls)
+                    
+                    # Process results and track state for each assignment
+                    await self._process_batch_acl_results(
+                        batch_result=batch_result,
+                        assignment_metadata=assignment_metadata,
+                        client=client,
+                    )
+                    
+                    self._logger.info(
+                        "Batch ACL creation completed",
+                        total_created=len(added_acls),
+                        assignments_processed=len(assignment_metadata),
+                    )
+                else:
+                    results["assignment_errors"].append("Batch ACL creation failed")
+                
+            except Exception as e:
+                error_msg = f"Error during batch ACL creation: {str(e)}"
+                self._logger.error(error_msg)
+                results["assignment_errors"].append(error_msg)
+        
+        elif all_acl_entries and dry_run:
+            # Dry run - just count what would be created
+            results["acls_created"] = len(all_acl_entries)
+            self._logger.info(
+                "Would create ACLs in batch (dry run)",
+                total_acls=len(all_acl_entries),
+                assignments_count=len(assignment_metadata),
+            )
+        
         return results
+    
+    async def _prepare_acl_entries(
+        self,
+        client: BraintrustClient,
+        group_name: str,
+        role_name: str,
+        projects: List[Dict[str, Any]],
+        assignment_rule: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Prepare ACL entries for batch creation without actually creating them.
+        
+        Args:
+            client: Braintrust client
+            group_name: Name of the group
+            role_name: Name of the role
+            projects: List of project objects
+            assignment_rule: Assignment rule that created this ACL
+            
+        Returns:
+            Dictionary with ACL entries and metadata for batch processing
+        """
+        try:
+            # Get group and role IDs using cached lookups
+            group = await client.find_group_by_name_cached(group_name)
+            if not group:
+                return {
+                    "success": False,
+                    "error": f"Group '{group_name}' not found"
+                }
+            
+            role = await client.get_role_by_name_cached(role_name)
+            if not role:
+                return {
+                    "success": False,
+                    "error": f"Role '{role_name}' not found"
+                }
+            
+            group_id = group.get('id') if isinstance(group, dict) else getattr(group, 'id')
+            role_id = role.get('id')
+            
+            # Build ACL entries
+            acl_entries = []
+            for project in projects:
+                project_id = project.get('id')
+                if project_id:
+                    acl_entries.append({
+                        "object_type": "project",
+                        "object_id": project_id,
+                        "group_id": group_id,
+                        "role_id": role_id
+                    })
+            
+            return {
+                "success": True,
+                "acl_entries": acl_entries,
+                "group_id": group_id,
+                "role_id": role_id,
+                "group_name": group_name,
+                "role_name": role_name,
+                "assignment_rule": assignment_rule,
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error preparing ACL entries for {group_name}-{role_name}: {str(e)}"
+            }
+    
+    async def _process_batch_acl_results(
+        self,
+        batch_result: Dict[str, Any],
+        assignment_metadata: List[Dict[str, Any]],
+        client: BraintrustClient,
+    ) -> None:
+        """Process batch ACL creation results and track state for each assignment.
+        
+        Args:
+            batch_result: Result from batch_update_acls API call
+            assignment_metadata: Metadata about each assignment and its ACLs
+            client: Braintrust client for role lookups
+        """
+        added_acls = batch_result.get("added_acls", [])
+        
+        # Process each assignment's ACLs
+        for metadata in assignment_metadata:
+            assignment = metadata["assignment"]
+            projects = metadata["projects"]
+            group_id = metadata["group_id"]
+            role_id = metadata["role_id"]
+            acl_count = metadata["acl_count"]
+            start_index = metadata["acl_start_index"]
+            
+            # Get the ACLs that belong to this assignment
+            assignment_acls = added_acls[start_index:start_index + acl_count]
+            
+            # Get role details for permissions (using cache)
+            role = await client.get_role_by_name_cached(assignment.role_name)
+            permissions = []
+            if role and role.get("member_permissions"):
+                permissions = [p.get("permission") for p in role["member_permissions"]]
+            
+            # Track each ACL in enhanced state
+            for i, acl_info in enumerate(assignment_acls):
+                if isinstance(acl_info, dict) and acl_info.get("id"):
+                    # Match ACL to its corresponding project
+                    project = projects[i] if i < len(projects) else {}
+                    
+                    self.state_manager.track_acl_state(
+                        acl_id=acl_info["id"],
+                        group_id=group_id,
+                        group_name=assignment.group_name,
+                        role_id=role_id,
+                        role_name=assignment.role_name,
+                        project_id=acl_info.get("object_id", ""),
+                        project_name=project.get("name", ""),
+                        braintrust_org=client.org_name,
+                        permissions=permissions,
+                        assignment_rule=metadata.get("assignment_rule"),
+                        created_by_sync=True,
+                    )
+            
+            self._logger.debug(
+                "Tracked ACLs for assignment",
+                group_name=assignment.group_name,
+                role_name=assignment.role_name,
+                acl_count=len(assignment_acls),
+            )
     
     async def _find_matching_projects(
         self,
         client: BraintrustClient,
         project_match: ProjectMatchRule,
         braintrust_org: str,
+        cached_projects: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Find projects that match the given rules.
         
@@ -412,12 +621,22 @@ class RoleProjectAssignmentManager:
             client: Braintrust client
             project_match: Project matching rules
             braintrust_org: Braintrust organization name
+            cached_projects: Optional pre-fetched project list to avoid API calls
             
         Returns:
             List of matching project objects
         """
-        # Get all projects in the organization
-        all_projects = await client.list_projects(org_name=braintrust_org)
+        # Use cached projects if available, otherwise fetch them
+        if cached_projects is not None:
+            all_projects = cached_projects
+            self._logger.debug(
+                "Using cached projects for matching",
+                braintrust_org=braintrust_org,
+                total_projects=len(all_projects),
+            )
+        else:
+            # Fallback to API call if no cached projects provided
+            all_projects = await client.list_projects(org_name=braintrust_org)
         
         self._logger.debug(
             "Retrieved projects for matching",
@@ -634,8 +853,8 @@ class RoleProjectAssignmentManager:
                     created_acls = result.get("created_acls", [])
                     for acl_info in created_acls:
                         if all(key in acl_info for key in ["acl_id", "group_id", "role_id", "project_id"]):
-                            # Get role details for permissions
-                            role = await client.get_role_by_name(role_name)
+                            # Get role details for permissions (using cache for performance)
+                            role = await client.get_role_by_name_cached(role_name)
                             permissions = []
                             if role and role.get("member_permissions"):
                                 permissions = [p.get("permission") for p in role["member_permissions"]]

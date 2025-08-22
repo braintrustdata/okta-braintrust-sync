@@ -62,6 +62,13 @@ class BraintrustClient:
         self._error_count = 0
         self._last_request_time: Optional[float] = None
         
+        # ========== Caching for performance optimization ==========
+        # Cache groups and roles to avoid repeated API calls during sync operations
+        self._groups_cache: Optional[List[Group]] = None
+        self._roles_cache: Optional[List[Dict[str, Any]]] = None
+        self._groups_cache_by_name: Optional[Dict[str, Group]] = None
+        self._roles_cache_by_name: Optional[Dict[str, Dict[str, Any]]] = None
+        
         # Extract organization name from API URL for logging
         parsed_url = urlparse(str(api_url))
         self.org_name = parsed_url.hostname or "unknown"
@@ -882,6 +889,93 @@ class BraintrustClient:
             self._logger.warning("Error searching for group by name", name=name, error=str(e))
             return None
     
+    # ========== Caching Methods for Performance Optimization ==========
+    
+    async def _ensure_groups_cache(self) -> None:
+        """Ensure groups cache is populated."""
+        if self._groups_cache is None or self._groups_cache_by_name is None:
+            self._logger.debug("Populating groups cache")
+            groups = await self.list_groups()
+            self._groups_cache = groups
+            
+            # Build name-to-group mapping for O(1) lookups
+            self._groups_cache_by_name = {}
+            for group in groups:
+                group_name = (
+                    group.get('name') if isinstance(group, dict)
+                    else getattr(group, 'name', None)
+                )
+                if group_name:
+                    self._groups_cache_by_name[group_name] = group
+            
+            self._logger.debug(
+                "Groups cache populated",
+                cached_groups=len(self._groups_cache),
+                unique_names=len(self._groups_cache_by_name)
+            )
+    
+    async def _ensure_roles_cache(self) -> None:
+        """Ensure roles cache is populated."""
+        if self._roles_cache is None or self._roles_cache_by_name is None:
+            self._logger.debug("Populating roles cache")
+            roles = await self.list_roles()
+            self._roles_cache = roles
+            
+            # Build name-to-role mapping for O(1) lookups
+            self._roles_cache_by_name = {}
+            for role in roles:
+                role_name = role.get('name') if isinstance(role, dict) else None
+                if role_name:
+                    self._roles_cache_by_name[role_name] = role
+            
+            self._logger.debug(
+                "Roles cache populated", 
+                cached_roles=len(self._roles_cache),
+                unique_names=len(self._roles_cache_by_name)
+            )
+    
+    async def find_group_by_name_cached(self, name: str) -> Optional[Group]:
+        """Find a group by name using cache for performance.
+        
+        Args:
+            name: Group name to search for
+            
+        Returns:
+            Group object if found, None otherwise
+        """
+        try:
+            await self._ensure_groups_cache()
+            return self._groups_cache_by_name.get(name)
+        except Exception as e:
+            self._logger.warning("Error searching for group by name (cached)", name=name, error=str(e))
+            # Fallback to non-cached method
+            return await self.find_group_by_name(name)
+    
+    async def get_role_by_name_cached(self, role_name: str) -> Optional[Dict[str, Any]]:
+        """Get a role by name using cache for performance.
+        
+        Args:
+            role_name: Name of the role to find
+            
+        Returns:
+            Role object if found, None otherwise
+        """
+        try:
+            await self._ensure_roles_cache()
+            return self._roles_cache_by_name.get(role_name)
+        except Exception as e:
+            self._logger.warning("Error searching for role by name (cached)", role_name=role_name, error=str(e))
+            # Fallback to non-cached method
+            return await self.get_role_by_name(role_name)
+    
+    def clear_caches(self) -> None:
+        """Clear all caches. Useful when groups or roles are modified during sync."""
+        self._groups_cache = None
+        self._roles_cache = None
+        self._groups_cache_by_name = None
+        self._roles_cache_by_name = None
+        self._logger.debug("All caches cleared")
+    
     # ========== Role Management Methods ==========
     
     async def create_role(self, role_definition: RoleDefinition) -> Dict[str, Any]:
@@ -1385,15 +1479,15 @@ class BraintrustClient:
             Dictionary with success status and results
         """
         try:
-            # Step 1: Get the group
-            group = await self.find_group_by_name(group_name)
+            # Step 1: Get the group (using cache for performance)
+            group = await self.find_group_by_name_cached(group_name)
             if not group:
                 raise ResourceNotFoundError(f"Group '{group_name}' not found")
             
             group_id = group.get('id') if isinstance(group, dict) else getattr(group, 'id')
             
-            # Step 2: Get the role
-            role = await self.get_role_by_name(role_name)
+            # Step 2: Get the role (using cache for performance)
+            role = await self.get_role_by_name_cached(role_name)
             if not role:
                 raise ResourceNotFoundError(f"Role '{role_name}' not found")
             

@@ -559,16 +559,34 @@ class SyncPlanner:
             client = self.braintrust_clients[org_name]
             
             try:
+                # ========== Optimization: Cache projects for planning ==========
+                # Fetch all projects once to avoid redundant API calls during planning
+                try:
+                    all_projects = await client.list_projects(org_name=org_name)
+                    self._logger.debug(
+                        "Cached projects for ACL planning",
+                        braintrust_org=org_name,
+                        total_projects=len(all_projects),
+                    )
+                except Exception as e:
+                    self._logger.error(
+                        "Failed to fetch projects for ACL planning",
+                        braintrust_org=org_name,
+                        error=str(e),
+                    )
+                    continue
+                
                 # Process each group assignment to generate ACL items
                 for assignment in config.group_assignments:
                     if not assignment.enabled:
                         continue
                     
-                    # Find matching projects for this assignment
+                    # Find matching projects using cached project list
                     projects = await role_manager._find_matching_projects(
                         client=client,
                         project_match=assignment.project_match,
                         braintrust_org=org_name,
+                        cached_projects=all_projects,  # Pass cached projects
                     )
                     
                     # Create ACL plan item for each project
