@@ -937,6 +937,12 @@ class SyncPlanner:
             if hasattr(sync_options, 'continue_on_error'):
                 sync_rules["continue_on_error"] = sync_options.continue_on_error
         
+        # Add deletion policies from config if available (stateless approach)
+        if hasattr(self.config, 'deletion_policies') and self.config.deletion_policies:
+            deletion_policies = self.config.deletion_policies
+            # Convert Pydantic model to dict for syncer compatibility
+            sync_rules["deletion_policies"] = deletion_policies.model_dump()
+        
         return sync_rules
     
     def _extract_okta_filters_from_config(self) -> Dict[str, str]:

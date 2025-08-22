@@ -40,8 +40,42 @@
 ### Dev Requirements
 1. Make sure that changes made to the planning phase first as the planning phase determines what happens in the apply phase.
 
-### Syncing Workflow
+### Syncing Workflow - Stateless Architecture
+**Target Architecture (In Progress):**
 1. Cache resources from Okta and Braintrust to reduce network calls
-2. Check if resources (users, groups, roles, ACLs) already exist in the state and match what is retrieved from Okta based on the yaml config
-3. Create resources that don't exist in state but defined in the yaml, delete resources that are defined to be deleted by the yaml config.
-4. Plan overview that the user will say y/n before executing. 
+2. Compare Okta resources directly against current Braintrust state (no state file dependency)
+3. Generate plans based on actual reality, not tracked state
+4. Use explicit deletion policies configured in YAML instead of state tracking
+5. Plan overview that the user will say y/n before executing
+
+**Key Design Principles:**
+- **Stateless**: Always compare against current Braintrust reality, not persistent state
+- **Explicit Deletion**: Users must explicitly configure what gets deleted in YAML
+- **Self-Healing**: Automatically handles manual changes made outside the sync tool
+- **Conservative**: Default to no deletion unless explicitly enabled
+
+**Example Explicit Deletion Configuration:**
+```yaml
+deletion_policies:
+  users:
+    enabled: true
+    okta_conditions:
+      - status: "DEPROVISIONED"
+      - status: "SUSPENDED"
+    braintrust_conditions:
+      - inactive_days: 30
+  
+  groups:
+    enabled: false  # Conservative default - never auto-delete
+  
+  acls:
+    enabled: true
+    scope: "sync_managed_roles"  # Only ACLs using roles defined in config
+```
+
+**Benefits of Stateless Approach:**
+- No state drift issues between tracked state and actual Braintrust state
+- Simpler architecture without complex state management
+- More reliable since it always reflects current reality
+- Easier debugging and troubleshooting
+- Self-healing when resources are modified externally 

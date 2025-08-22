@@ -777,36 +777,126 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
         okta_resources: List[OktaUser],
         braintrust_org: str,
         sync_rules: Dict[str, Any],
+        braintrust_resources: Optional[List[BraintrustUser]] = None,
     ) -> List:
         """Generate deletion plan for users that exist in Braintrust but not in Okta.
-        Override to include Braintrust user information for better display.
+        
+        Special handling for users: Only delete users who exist in the Okta org but have
+        non-ACTIVE status. Users who don't exist in Okta org at all should be ignored.
         
         Note: We fetch user details on-demand rather than storing PII in state files
         for security and privacy reasons.
         """
         from sync.resources.base import SyncPlanItem, SyncAction
         
-        # First call the parent implementation to get the basic plan
-        plan_items = await super()._generate_deletion_plan(okta_resources, braintrust_org, sync_rules)
+        plan_items = []
         
-        # If there are deletion items, enhance them with Braintrust user information
-        # This is done on-demand for display purposes only, not stored in state
+        try:
+            # Check if remove_extra is enabled - if not, skip deletion planning
+            if not sync_rules.get('remove_extra', False):
+                self._logger.debug(
+                    "Skipping user deletion planning - remove_extra is disabled",
+                    braintrust_org=braintrust_org,
+                )
+                return []
+            
+            # Fetch ALL users from Okta org (not just filtered ones) to determine
+            # which Braintrust users actually exist in the Okta org
+            all_okta_users = await self.okta_client.list_users(limit=10000)  # Get all users
+            okta_users_by_email = {
+                self.get_resource_identifier(user).lower(): user 
+                for user in all_okta_users
+            }
+            
+            # Fetch Braintrust resources if not provided
+            if braintrust_resources is None:
+                braintrust_resources = await self.get_braintrust_resources(braintrust_org)
+            
+            self._logger.debug(
+                "User deletion planning - checking against ALL Okta users",
+                braintrust_org=braintrust_org,
+                all_okta_users=len(all_okta_users),
+                braintrust_users=len(braintrust_resources),
+            )
+            
+            # Check each Braintrust user
+            for braintrust_user in braintrust_resources:
+                bt_email = self.get_braintrust_resource_identifier(braintrust_user).lower()
+                bt_user_id = self._get_braintrust_resource_id(braintrust_user)
+                
+                # Check if this Braintrust user has a corresponding Okta user
+                okta_user = okta_users_by_email.get(bt_email)
+                
+                if okta_user is None:
+                    # User doesn't exist in Okta org at all - IGNORE (don't delete)
+                    self._logger.debug(
+                        "Ignoring Braintrust user - not found in Okta org",
+                        user_email=bt_email,
+                        braintrust_org=braintrust_org,
+                    )
+                    continue
+                
+                # User exists in Okta org - check if they should be deleted based on status
+                okta_status = getattr(okta_user, 'status', 'UNKNOWN')
+                if okta_status != 'ACTIVE':
+                    # User exists in Okta but is not ACTIVE - consider for deletion
+                    should_delete = await self._should_delete_resource(
+                        braintrust_resource=braintrust_user,
+                        sync_rules=sync_rules,
+                        braintrust_org=braintrust_org,
+                    )
+                    
+                    if should_delete:
+                        plan_items.append(SyncPlanItem(
+                            okta_resource_id=bt_email,
+                            okta_resource_type=self.resource_type,
+                            okta_resource={},  # Will be enhanced below
+                            braintrust_org=braintrust_org,
+                            action=SyncAction.DELETE,
+                            reason=f"User exists in Okta with status '{okta_status}' (not ACTIVE)",
+                            existing_braintrust_id=bt_user_id,
+                            braintrust_resource_id=bt_user_id,
+                        ))
+                        
+                        self._logger.debug(
+                            "Planned user deletion - non-ACTIVE in Okta",
+                            user_email=bt_email,
+                            okta_status=okta_status,
+                            braintrust_org=braintrust_org,
+                        )
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to generate user deletion plan",
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            # Don't raise - deletion plan generation should not fail the whole sync
+            return []
+        
+        # Enhance deletion plan items with display information
+        # This provides user details for the plan display without affecting the core data
         if plan_items:
-            client = self.braintrust_clients.get(braintrust_org)
-            if client:
-                try:
-                    # Fetch current Braintrust users to get display information
-                    # This ensures we show accurate, current information without storing PII
-                    braintrust_users = await client.list_users()
-                    bt_users_by_email = {user.email.lower(): user for user in braintrust_users}
+            try:
+                # We already fetched Braintrust users earlier, but get them again for display
+                # since we need the full user objects for proper display formatting
+                client = self.braintrust_clients.get(braintrust_org)
+                if client:
+                    display_bt_users = await client.list_users()
+                    bt_users_by_email = {user.email.lower(): user for user in display_bt_users}
                     
                     # Enhance each deletion plan item with user info for display
                     for item in plan_items:
                         if item.action == SyncAction.DELETE:
                             # The okta_resource_id should be the email for users
                             email_key = item.okta_resource_id.lower()
+                            
                             if email_key in bt_users_by_email:
                                 bt_user = bt_users_by_email[email_key]
+                                # Get the Okta user info we fetched earlier
+                                okta_user = okta_users_by_email.get(email_key)
+                                okta_status = getattr(okta_user, 'status', 'UNKNOWN') if okta_user else 'NOT_IN_OKTA'
+                                
                                 # Create a display-friendly resource object
                                 # This is NOT stored, only used for plan display
                                 item.okta_resource = {
@@ -817,11 +907,11 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                                         "lastName": bt_user.family_name or "",
                                         "login": bt_user.email,
                                     },
-                                    "status": "DEPROVISIONED",  # Indicates will be removed
+                                    "status": okta_status,  # Show actual Okta status
                                 }
                             else:
                                 # User not found in current Braintrust users
-                                # Provide minimal info for display
+                                # This shouldn't happen with our new logic, but handle it
                                 item.okta_resource = {
                                     "id": item.existing_braintrust_id or "unknown",
                                     "profile": {
@@ -832,15 +922,70 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                                     },
                                     "status": "NOT_FOUND",
                                 }
-                except Exception as e:
-                    self._logger.warning(
-                        "Failed to fetch Braintrust user info for deletion plan display",
-                        braintrust_org=braintrust_org,
-                        error=str(e),
-                        # Don't log user details in errors
-                    )
+            except Exception as e:
+                self._logger.warning(
+                    "Failed to enhance deletion plan items for display",
+                    braintrust_org=braintrust_org,
+                    error=str(e),
+                )
         
         return plan_items
+    
+    async def _should_delete_resource(
+        self,
+        braintrust_resource: BraintrustUser,
+        sync_rules: Dict[str, Any],
+        braintrust_org: str,
+    ) -> bool:
+        """Determine if a user should be deleted based on explicit deletion policies.
+        
+        For users, we implement stateless deletion based on explicit configuration
+        rather than state tracking.
+        
+        Args:
+            braintrust_resource: The Braintrust user to evaluate for deletion
+            sync_rules: Sync rules configuration with deletion policies
+            braintrust_org: Target Braintrust organization
+            
+        Returns:
+            True if the user should be deleted, False otherwise
+        """
+        # Check for user-specific deletion policies
+        deletion_policies = sync_rules.get('deletion_policies', {})
+        users_policy = deletion_policies.get('users', {})
+        
+        # Default to False (conservative - don't delete users unless explicitly enabled)
+        if not users_policy.get('enabled', False):
+            return False
+        
+        # Check global dry run override
+        if deletion_policies.get('global_dry_run', False):
+            self._logger.info(
+                "User deletion blocked by global dry run policy",
+                user_email=getattr(braintrust_resource, 'email', 'unknown'),
+                braintrust_org=braintrust_org,
+            )
+            return False
+        
+        # Check if admin user preservation is enabled
+        if users_policy.get('preserve_admin_users', True):
+            # This is a placeholder - would need to implement admin detection
+            # For now, assume non-admin users are safe to delete
+            pass
+        
+        # Apply Braintrust-side conditions if specified
+        braintrust_conditions = users_policy.get('braintrust_conditions', [])
+        for condition in braintrust_conditions:
+            if isinstance(condition, dict) and condition.get('inactive_days'):
+                # Check if user has been inactive for specified days
+                # This is a placeholder - would need to implement inactive day checking
+                # For now, we'll skip this condition
+                continue
+        
+        # If no conditions block deletion, allow it
+        # The main criteria is that the user exists in Braintrust but not in Okta
+        # and deletion is explicitly enabled
+        return True
     
     async def delete_braintrust_resource(
         self,

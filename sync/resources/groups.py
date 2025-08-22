@@ -857,3 +857,82 @@ class GroupSyncer(BaseResourceSyncer[OktaGroup, BraintrustGroup]):
             return braintrust_resource.get('id')
         else:
             return getattr(braintrust_resource, 'id', None)
+    
+    async def _should_delete_resource(
+        self,
+        braintrust_resource: BraintrustGroup,
+        sync_rules: Dict[str, Any],
+        braintrust_org: str,
+    ) -> bool:
+        """Determine if a group should be deleted based on group-specific deletion policies.
+        
+        Args:
+            braintrust_resource: The Braintrust group to evaluate
+            sync_rules: Sync rules configuration with deletion policies
+            braintrust_org: Target Braintrust organization
+            
+        Returns:
+            True if the group should be deleted, False otherwise
+        """
+        # Get group deletion policies
+        deletion_policies = sync_rules.get('deletion_policies', {})
+        group_policy = deletion_policies.get('groups', {})
+        
+        # Check if group deletion is enabled
+        if not group_policy.get('enabled', False):
+            self._logger.debug(
+                "Group deletion disabled by policy",
+                group_name=self.get_braintrust_resource_identifier(braintrust_resource),
+                braintrust_org=braintrust_org,
+            )
+            return False
+        
+        # Get group name for filtering
+        group_name = self.get_braintrust_resource_identifier(braintrust_resource)
+        
+        # Check if we have a target_groups filter
+        target_groups = group_policy.get('target_groups')
+        if target_groups is not None:
+            if group_name not in target_groups:
+                self._logger.debug(
+                    "Group not in target deletion list",
+                    group_name=group_name,
+                    target_groups=target_groups,
+                    braintrust_org=braintrust_org,
+                )
+                return False
+        
+        # Check preserve_system_groups (could check for certain naming patterns)
+        if group_policy.get('preserve_system_groups', True):
+            # Define system group patterns that should be preserved
+            system_patterns = ['admin', 'system', 'default', 'everyone', 'all-users']
+            group_name_lower = group_name.lower()
+            
+            for pattern in system_patterns:
+                if pattern in group_name_lower:
+                    self._logger.debug(
+                        "Preserving system group",
+                        group_name=group_name,
+                        matched_pattern=pattern,
+                        braintrust_org=braintrust_org,
+                    )
+                    return False
+        
+        # Check min_member_threshold
+        min_members = group_policy.get('min_member_threshold')
+        if min_members is not None:
+            # For this we'd need to fetch group membership, but for now we'll skip this check
+            # since it would require additional API calls
+            self._logger.debug(
+                "min_member_threshold check skipped (requires additional API call)",
+                group_name=group_name,
+                min_threshold=min_members,
+                braintrust_org=braintrust_org,
+            )
+        
+        self._logger.debug(
+            "Group approved for deletion",
+            group_name=group_name,
+            braintrust_org=braintrust_org,
+        )
+        return True

@@ -13,6 +13,7 @@ from .mode_models import SyncModesConfig
 from .audit_models import AuditConfig, StateManagementConfig
 from .group_assignment_models import GroupAssignmentRules
 from .role_project_models import RoleProjectRules
+from .deletion_models import DeletionPoliciesConfig
 
 # Re-export commonly used models for backward compatibility
 from .base_models import SyncState, ResourceMapping
@@ -25,6 +26,10 @@ from .mode_models import (
     DeclarativeModeConfig, RealtimeModeConfig, PriorityRule, SyncModesConfig
 )
 from .audit_models import AuditConfig, StateManagementConfig
+from .deletion_models import (
+    DeletionCondition, ResourceDeletionPolicy, UserDeletionPolicy,
+    GroupDeletionPolicy, ACLDeletionPolicy, DeletionPoliciesConfig
+)
 
 
 
@@ -66,6 +71,12 @@ class SyncConfig(BaseModel):
     role_project_assignment: RoleProjectRules | None = Field(
         None,
         description="Role and project assignment rules for Groups → Roles → Projects workflow"
+    )
+    
+    # Deletion policy configuration (stateless approach)
+    deletion_policies: DeletionPoliciesConfig = Field(
+        default_factory=DeletionPoliciesConfig,
+        description="Explicit deletion policies for stateless sync approach"
     )
     
     # Audit configuration

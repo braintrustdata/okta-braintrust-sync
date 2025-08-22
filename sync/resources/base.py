@@ -66,6 +66,7 @@ class SyncPlanItem(BaseModel):
     action: SyncAction
     reason: str
     existing_braintrust_id: Optional[str] = None
+    braintrust_resource_id: Optional[str] = None  # For DELETE operations
     proposed_changes: Dict[str, Any] = Field(default_factory=dict)
     dependencies: List[str] = Field(default_factory=list)  # Other resource IDs this depends on
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -328,18 +329,23 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             
             # Generate plan items for each organization
             for braintrust_org in braintrust_orgs:
+                # Fetch Braintrust resources once for both sync and deletion planning
+                braintrust_resources = await self.get_braintrust_resources(braintrust_org)
+                
                 org_plan_items = await self._generate_org_sync_plan(
                     okta_resources,
                     braintrust_org,
                     sync_rules,
+                    braintrust_resources,  # Pass cached resources
                 )
                 plan_items.extend(org_plan_items)
                 
-                # Generate deletion plan items for resources that exist in Braintrust but not in Okta
+                # Generate deletion plan items using the same cached resources
                 deletion_plan_items = await self._generate_deletion_plan(
                     okta_resources,
                     braintrust_org,
                     sync_rules,
+                    braintrust_resources,  # Pass cached resources
                 )
                 plan_items.extend(deletion_plan_items)
             
@@ -364,6 +370,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
         okta_resources: List[OktaResourceType],
         braintrust_org: str,
         sync_rules: Dict[str, Any],
+        braintrust_resources: Optional[List[BraintrustResourceType]] = None,
     ) -> List[SyncPlanItem]:
         """Generate sync plan for a specific organization.
         
@@ -383,8 +390,9 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             if current_state is None:
                 self._logger.warning("No current sync state available - continuing with empty state for first run")
             
-            # Get existing Braintrust resources for comparison
-            braintrust_resources = await self.get_braintrust_resources(braintrust_org)
+            # Use provided Braintrust resources or fetch them if not provided
+            if braintrust_resources is None:
+                braintrust_resources = await self.get_braintrust_resources(braintrust_org)
             braintrust_resource_map = {
                 self.get_braintrust_resource_identifier(res): res for res in braintrust_resources
             }
@@ -526,16 +534,18 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
         okta_resources: List[OktaResourceType],
         braintrust_org: str,
         sync_rules: Dict[str, Any],
+        braintrust_resources: Optional[List[BraintrustResourceType]] = None,
     ) -> List[SyncPlanItem]:
-        """Generate deletion plan for resources that exist in Braintrust but not in Okta.
+        """Generate deletion plan using stateless comparison between Okta and Braintrust.
         
         Args:
             okta_resources: List of current Okta resources (source of truth)
             braintrust_org: Target Braintrust organization
-            sync_rules: Sync rules configuration
+            sync_rules: Sync rules configuration with deletion policies
+            braintrust_resources: Current Braintrust resources (cached for performance)
             
         Returns:
-            List of deletion plan items
+            List of deletion plan items based on explicit deletion policies
         """
         plan_items = []
         
@@ -549,12 +559,9 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                 )
                 return []
             
-            # Get state mappings to identify resources managed by this sync tool
-            managed_resources = self._get_managed_resources(braintrust_org)
-            
-            if not managed_resources:
-                # No managed resources, nothing to delete
-                return []
+            # Fetch Braintrust resources if not provided (for caching efficiency)
+            if braintrust_resources is None:
+                braintrust_resources = await self.get_braintrust_resources(braintrust_org)
             
             # Create sets of Okta resource identifiers for quick lookup
             okta_resource_identifiers = set()
@@ -564,26 +571,44 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                     okta_resource_identifiers.add(resource_identifier)
             
             self._logger.debug(
-                "Checking managed resources for deletion",
+                "Comparing resources for deletion (stateless)",
                 braintrust_org=braintrust_org,
                 okta_resources=len(okta_resource_identifiers),
-                managed_resources=len(managed_resources),
+                braintrust_resources=len(braintrust_resources),
             )
             
-            # Check each managed resource to see if it should be deleted
-            for bt_resource_id, okta_identifier in managed_resources.items():
-                # If the Okta resource no longer exists, plan for deletion
-                if okta_identifier not in okta_resource_identifiers:
-                    plan_items.append(SyncPlanItem(
-                        okta_resource_id=okta_identifier,
-                        okta_resource_type=self.resource_type,
-                        okta_resource={},  # No Okta resource for deletion
+            # Check each Braintrust resource to see if it should be deleted
+            for braintrust_resource in braintrust_resources:
+                bt_identifier = self.get_braintrust_resource_identifier(braintrust_resource)
+                bt_resource_id = self._get_braintrust_resource_id(braintrust_resource)
+                
+                # If the Braintrust resource doesn't exist in Okta, consider for deletion
+                if bt_identifier not in okta_resource_identifiers:
+                    # Apply resource-specific deletion policies
+                    should_delete = await self._should_delete_resource(
+                        braintrust_resource=braintrust_resource,
+                        sync_rules=sync_rules,
                         braintrust_org=braintrust_org,
-                        action=SyncAction.DELETE,
-                        reason=f"Resource exists in Braintrust but not in Okta (managed by sync tool)",
-                        existing_braintrust_id=bt_resource_id,
-                        braintrust_resource_id=bt_resource_id,  # Set this for DELETE operations
-                    ))
+                    )
+                    
+                    if should_delete:
+                        plan_items.append(SyncPlanItem(
+                            okta_resource_id=bt_identifier,
+                            okta_resource_type=self.resource_type,
+                            okta_resource={},  # No Okta resource for deletion
+                            braintrust_org=braintrust_org,
+                            action=SyncAction.DELETE,
+                            reason=f"Resource exists in Braintrust but not in Okta (deletion policy applied)",
+                            existing_braintrust_id=bt_resource_id,
+                            braintrust_resource_id=bt_resource_id,
+                        ))
+                    else:
+                        self._logger.debug(
+                            "Skipping deletion due to policy",
+                            resource_type=self.resource_type,
+                            resource_id=bt_resource_id,
+                            braintrust_org=braintrust_org,
+                        )
             
             self._logger.debug(
                 "Generated deletion plan",
@@ -601,6 +626,41 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             )
             # Don't raise - deletion plan generation should not fail the whole sync
             return []
+    
+    async def _should_delete_resource(
+        self,
+        braintrust_resource: BraintrustResourceType,
+        sync_rules: Dict[str, Any],
+        braintrust_org: str,
+    ) -> bool:
+        """Determine if a resource should be deleted based on explicit deletion policies.
+        
+        This is the stateless replacement for state-based tracking. Resource-specific
+        syncers can override this to implement their own deletion policies.
+        
+        Args:
+            braintrust_resource: The Braintrust resource to evaluate
+            sync_rules: Sync rules configuration with deletion policies
+            braintrust_org: Target Braintrust organization
+            
+        Returns:
+            True if the resource should be deleted, False otherwise
+        """
+        # Base implementation: Conservative approach - only delete if explicitly configured
+        # Resource-specific syncers (users, groups) should override this method
+        
+        # Check for resource-specific deletion policies in sync_rules
+        deletion_policies = sync_rules.get('deletion_policies', {})
+        resource_policy = deletion_policies.get(self.resource_type, {})
+        
+        # Default to False (conservative - don't delete unless explicitly enabled)
+        if not resource_policy.get('enabled', False):
+            return False
+        
+        # Apply any resource-specific conditions
+        # Base implementation returns True if deletion is enabled
+        # Subclasses should override to implement specific conditions
+        return True
     
     def _get_managed_resources(self, braintrust_org: str) -> Dict[str, str]:
         """Get mapping of Braintrust resource IDs to Okta resource IDs for resources managed by this sync tool.
