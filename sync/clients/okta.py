@@ -153,6 +153,13 @@ class OktaClient(BaseAPIClient):
         )
         
         self._logger = logger.bind(okta_domain=self.domain)
+        
+        # ========== Caching for performance optimization ==========
+        # Cache users and groups to avoid repeated API calls during sync operations
+        self._users_cache: Optional[List[OktaUser]] = None
+        self._groups_cache: Optional[List[Dict[str, Any]]] = None
+        self._users_cache_by_email: Optional[Dict[str, OktaUser]] = None
+        self._groups_cache_by_name: Optional[Dict[str, Dict[str, Any]]] = None
     
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get Okta authentication headers."""
@@ -196,6 +203,54 @@ class OktaClient(BaseAPIClient):
             if e.status_code == 404:
                 raise ResourceNotFoundError(f"User not found: {user_id}") from e
             raise self._convert_to_okta_error(e) from e
+    
+    # ========== Caching Methods for Performance Optimization ==========
+    
+    async def _ensure_users_cache(self) -> None:
+        """Ensure users cache is populated."""
+        if self._users_cache is None or self._users_cache_by_email is None:
+            self._logger.debug("Populating users cache")
+            users = await self.list_users()  # Get all users without filters
+            self._users_cache = users
+            
+            # Build email-to-user mapping for O(1) lookups
+            self._users_cache_by_email = {}
+            for user in users:
+                if user.email:
+                    self._users_cache_by_email[user.email] = user
+            
+            self._logger.debug(
+                "Users cache populated",
+                cached_users=len(self._users_cache),
+                unique_emails=len(self._users_cache_by_email)
+            )
+    
+    async def _ensure_groups_cache(self) -> None:
+        """Ensure groups cache is populated."""
+        if self._groups_cache is None or self._groups_cache_by_name is None:
+            self._logger.debug("Populating groups cache")
+            groups = await self.list_groups()  # Get all groups without filters
+            self._groups_cache = [group.data for group in groups]  # Store raw data
+            
+            # Build name-to-group mapping for O(1) lookups
+            self._groups_cache_by_name = {}
+            for group in groups:
+                if hasattr(group, 'name') and group.name:
+                    self._groups_cache_by_name[group.name] = group.data
+            
+            self._logger.debug(
+                "Groups cache populated",
+                cached_groups=len(self._groups_cache),
+                unique_names=len(self._groups_cache_by_name)
+            )
+    
+    def clear_caches(self) -> None:
+        """Clear all caches. Useful when data is modified during sync."""
+        self._users_cache = None
+        self._groups_cache = None
+        self._users_cache_by_email = None
+        self._groups_cache_by_name = None
+        self._logger.debug("All Okta caches cleared")
     
     async def list_users(
         self,

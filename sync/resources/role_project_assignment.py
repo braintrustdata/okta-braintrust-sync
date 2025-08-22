@@ -80,7 +80,6 @@ class RoleProjectAssignmentManager:
         if not config:
             self._logger.warning(
                 "No role-project configuration found for org",
-                braintrust_org=braintrust_org,
             )
             return {"success": False, "error": "No configuration found"}
         
@@ -129,8 +128,7 @@ class RoleProjectAssignmentManager:
                 results.update(removal_results)
             
             self._logger.info(
-                "Role-project sync completed",
-                braintrust_org=braintrust_org,
+                "Role-project sync completed", 
                 **{k: v for k, v in results.items() if k not in ["errors", "warnings"]},
             )
             
@@ -139,7 +137,6 @@ class RoleProjectAssignmentManager:
         except Exception as e:
             self._logger.error(
                 "Error during role-project sync",
-                braintrust_org=braintrust_org,
                 error=str(e),
             )
             results["errors"].append(str(e))
@@ -187,7 +184,7 @@ class RoleProjectAssignmentManager:
                         role_id=existing_role["id"],
                         role_name=role_def.name,
                         braintrust_org=client.org_name,
-                        role_definition=role_def.model_dump(),
+                        role_definition=role_def.model_dump(mode='json'),
                         created_by_sync=False,  # Pre-existing role
                     )
                     
@@ -206,7 +203,7 @@ class RoleProjectAssignmentManager:
                                 role_id=existing_role["id"],
                                 role_name=role_def.name,
                                 braintrust_org=client.org_name,
-                                role_definition=role_def.model_dump(),
+                                role_definition=role_def.model_dump(mode='json'),
                                 created_by_sync=True,  # Now managed by sync
                             )
                             
@@ -234,7 +231,7 @@ class RoleProjectAssignmentManager:
                                     role_id=created_role["id"],
                                     role_name=role_def.name,
                                     braintrust_org=client.org_name,
-                                    role_definition=role_def.model_dump(),
+                                    role_definition=role_def.model_dump(mode='json'),
                                     created_by_sync=True,  # Created by sync
                                 )
                             
@@ -333,19 +330,13 @@ class RoleProjectAssignmentManager:
             reverse=True
         )
         
-        # ========== Optimization: Cache project list ==========
-        # Fetch all projects once to avoid redundant API calls
+        # ========== Projects cached during planning phase ==========
+        # Project list is already cached by planner, just fetch it once here
         try:
             all_projects = await client.list_projects(org_name=braintrust_org)
-            self._logger.debug(
-                "Cached projects for assignment processing",
-                braintrust_org=braintrust_org,
-                total_projects=len(all_projects),
-            )
         except Exception as e:
             self._logger.error(
-                "Failed to fetch projects for caching",
-                braintrust_org=braintrust_org,
+                "Failed to fetch projects for assignment processing",
                 error=str(e),
             )
             results["assignment_errors"].append(f"Failed to fetch projects: {str(e)}")
@@ -360,12 +351,8 @@ class RoleProjectAssignmentManager:
             try:
                 results["assignments_processed"] += 1
                 
-                self._logger.debug(
-                    "Processing group assignment",
-                    group_name=assignment.group_name,
-                    role_name=assignment.role_name,
-                    priority=assignment.priority,
-                )
+                # Processing assignment (reduced logging for cleaner output)
+                pass
                 
                 # Find matching projects using cached project list
                 projects = await self._find_matching_projects(
@@ -405,7 +392,7 @@ class RoleProjectAssignmentManager:
                     group_name=assignment.group_name,
                     role_name=assignment.role_name,
                     projects=projects,
-                    assignment_rule=assignment.model_dump(),
+                    assignment_rule=assignment.model_dump(mode='json'),
                 )
                 
                 if acl_data.get("success"):
@@ -446,7 +433,7 @@ class RoleProjectAssignmentManager:
                 # Single batch API call for all ACLs
                 batch_result = await client.batch_update_acls(add_acls=all_acl_entries)
                 
-                if batch_result:
+                if batch_result and isinstance(batch_result, dict):
                     added_acls = batch_result.get("added_acls", [])
                     results["acls_created"] = len(added_acls)
                     
@@ -463,7 +450,9 @@ class RoleProjectAssignmentManager:
                         assignments_processed=len(assignment_metadata),
                     )
                 else:
-                    results["assignment_errors"].append("Batch ACL creation failed")
+                    error_msg = f"Batch ACL creation failed: {batch_result}"
+                    self._logger.error(error_msg)
+                    results["assignment_errors"].append(error_msg)
                 
             except Exception as e:
                 error_msg = f"Error during batch ACL creation: {str(e)}"
@@ -629,11 +618,7 @@ class RoleProjectAssignmentManager:
         # Use cached projects if available, otherwise fetch them
         if cached_projects is not None:
             all_projects = cached_projects
-            self._logger.debug(
-                "Using cached projects for matching",
-                braintrust_org=braintrust_org,
-                total_projects=len(all_projects),
-            )
+            # Using cached projects (reduced logging)
         else:
             # Fallback to API call if no cached projects provided
             all_projects = await client.list_projects(org_name=braintrust_org)
@@ -695,23 +680,8 @@ class RoleProjectAssignmentManager:
                 matches = self._project_matches_patterns(project_name, project_match)
                 if matches:
                     matching_projects.append(project)
-                    self._logger.debug(
-                        "Project matched patterns",
-                        project_name=project_name,
-                        matched=True,
-                    )
-                else:
-                    self._logger.debug(
-                        "Project did not match patterns",
-                        project_name=project_name,
-                        patterns={
-                            "name_pattern": project_match.name_pattern,
-                            "name_contains": project_match.name_contains,
-                            "name_starts_with": project_match.name_starts_with,
-                            "name_ends_with": project_match.name_ends_with,
-                            "all_projects": project_match.all_projects,
-                        }
-                    )
+                    # Project matched (reduced logging for cleaner output)
+                # Project didn't match (reduced logging for cleaner output)
         
         # ========== Apply exclusion patterns ==========
         if project_match.exclude_patterns:

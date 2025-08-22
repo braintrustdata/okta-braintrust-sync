@@ -120,9 +120,8 @@ class GroupSyncConfig(BaseModel):
         description="Whether group sync is enabled"
     )
     mappings: List[GroupSyncMapping] = Field(
-        ...,
-        description="Group sync mapping rules",
-        min_length=1
+        default_factory=list,
+        description="Group sync mapping rules"
     )
     create_missing: bool = Field(
         True,
@@ -140,6 +139,13 @@ class GroupSyncConfig(BaseModel):
         True,
         description="Whether to sync group descriptions"
     )
+    
+    @model_validator(mode='after')
+    def validate_mappings_when_enabled(self) -> 'GroupSyncConfig':
+        """Ensure mappings are provided when group sync is enabled."""
+        if self.enabled and not self.mappings:
+            raise ValueError("mappings are required when group sync is enabled")
+        return self
 
 
 class SyncRulesConfig(BaseModel):

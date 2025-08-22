@@ -25,6 +25,7 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
         identity_mapping_strategy: str = "email",
         custom_field_mappings: Optional[Dict[str, str]] = None,
         enable_auto_group_assignment: bool = True,
+        group_assignment_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Initialize user syncer.
         
@@ -35,6 +36,7 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             identity_mapping_strategy: How to map user identities ("email", "custom_field", "mapping_file")
             custom_field_mappings: Custom field mappings for user attributes
             enable_auto_group_assignment: Whether to automatically assign groups based on Okta data
+            group_assignment_config: Optional group assignment configuration per org
         """
         super().__init__(okta_client, braintrust_clients, state_manager)
         
@@ -45,10 +47,16 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
         # Initialize group assignment manager if enabled
         self.group_assignment_manager = None
         if enable_auto_group_assignment:
+            self._logger.info(
+                "Initializing UserGroupAssignmentManager",
+                group_assignment_config_orgs=list(group_assignment_config.keys()) if group_assignment_config else None,
+                has_config=bool(group_assignment_config)
+            )
             self.group_assignment_manager = UserGroupAssignmentManager(
                 okta_client=okta_client,
                 braintrust_clients=braintrust_clients,
                 state_manager=state_manager,
+                group_assignment_config=group_assignment_config,
             )
         
         self._logger = logger.bind(
@@ -180,9 +188,19 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             
             # If auto group assignment is enabled and no groups specified, determine groups
             if self.enable_auto_group_assignment and self.group_assignment_manager and not group_names:
+                self._logger.info(
+                    "Calling group assignment for user",
+                    user_email=okta_resource.get('profile', {}).get('email') if isinstance(okta_resource, dict) else getattr(okta_resource, 'profile', {}).get('email'),
+                    braintrust_org=braintrust_org
+                )
                 group_names = await self.group_assignment_manager.assign_groups_on_sync(
                     okta_user=okta_resource,
                     braintrust_org=braintrust_org,
+                )
+                self._logger.info(
+                    "Group assignment result",
+                    assigned_groups=group_names,
+                    braintrust_org=braintrust_org
                 )
                 self._logger.debug(
                     "Auto-determined groups for user",
@@ -206,6 +224,37 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                 groups=group_names or [],
                 auto_assigned=self.enable_auto_group_assignment and not (additional_data and additional_data.get("group_names")),
             )
+            
+            # Ensure all assigned groups exist before inviting user
+            if group_names:
+                for group_name in group_names:
+                    try:
+                        # Check if group exists
+                        existing_group = await client.find_group_by_name_cached(group_name)
+                        if not existing_group:
+                            self._logger.info(
+                                "Auto-creating group for user assignment",
+                                group_name=group_name,
+                                braintrust_org=braintrust_org,
+                                user_email=user_data["email"]
+                            )
+                            # Create the group
+                            await client.create_group(
+                                name=group_name,
+                                description=f"Auto-created group from okta_group_mappings",
+                                member_users=[],
+                                member_groups=[]
+                            )
+                            # Clear the groups cache since we just created a group
+                            client._groups_cache = None
+                            client._groups_cache_by_name = None
+                    except Exception as e:
+                        self._logger.warning(
+                            "Failed to auto-create group",
+                            group_name=group_name,
+                            error=str(e),
+                            braintrust_org=braintrust_org
+                        )
             
             # Use invitation API instead of direct user creation
             invitation_response = await client.invite_user_to_organization(

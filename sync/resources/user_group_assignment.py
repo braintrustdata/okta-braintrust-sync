@@ -42,6 +42,7 @@ class UserGroupAssignmentManager:
         self.state_manager = state_manager
         self.group_assignment_config = group_assignment_config or {}
         
+        
         self._logger = logger.bind(
             component="UserGroupAssignmentManager",
         )

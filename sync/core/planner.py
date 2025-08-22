@@ -146,12 +146,26 @@ class SyncPlanner:
             # For now, use defaults. In the future, these could be part of UserSyncConfig
             pass
             
+        # Extract group assignment configuration if available
+        group_assignment_config = {}
+        if config.group_assignment and hasattr(config.group_assignment, 'get_config_for_org'):
+            # Create a dict mapping org names to their group assignment configs
+            for org_name in braintrust_clients.keys():
+                org_config = config.group_assignment.get_config_for_org(org_name)
+                if org_config:
+                    group_assignment_config[org_name] = org_config
+        elif config.group_assignment and hasattr(config.group_assignment, 'global_config'):
+            # Use global config for all orgs
+            for org_name in braintrust_clients.keys():
+                group_assignment_config[org_name] = config.group_assignment.global_config
+
         self.user_syncer = UserSyncer(
             okta_client=okta_client,
             braintrust_clients=braintrust_clients,
             state_manager=state_manager,
             identity_mapping_strategy=identity_strategy,
             custom_field_mappings=custom_mappings,
+            group_assignment_config=group_assignment_config,
         )
         
         # Use default group sync settings since they're not in the current config model
@@ -176,6 +190,74 @@ class SyncPlanner:
         self._logger = logger.bind(
             planner_type="SyncPlanner",
             target_orgs=list(braintrust_clients.keys()),
+        )
+    
+    async def _initialize_all_caches(
+        self,
+        target_organizations: List[str],
+    ) -> None:
+        """Initialize all caches during planning phase for optimal performance.
+        
+        This method pre-populates all API caches to eliminate redundant network calls
+        during both planning and execution phases.
+        
+        Args:
+            target_organizations: List of Braintrust organizations to cache data for
+        """
+        self._logger.info(
+            "Initializing comprehensive API caches",
+            target_orgs=target_organizations,
+        )
+        
+        # ========== Cache Okta Resources ==========
+        # Cache users and groups from Okta (these are shared across all orgs)
+        try:
+            self._logger.info("Caching Okta users and groups")
+            # Populate internal caches in the Okta client
+            await self.okta_client._ensure_users_cache()
+            await self.okta_client._ensure_groups_cache()
+            self._logger.info("Okta caching completed")
+        except Exception as e:
+            self._logger.warning(
+                "Failed to cache Okta resources",
+                error=str(e),
+            )
+        
+        # ========== Cache Braintrust Resources Per Organization ==========
+        for org_name in target_organizations:
+            if org_name not in self.braintrust_clients:
+                continue
+                
+            client = self.braintrust_clients[org_name]
+            
+            try:
+                self._logger.info(
+                    "Caching Braintrust resources",
+                    org_name=org_name,
+                )
+                
+                # Cache all Braintrust resources for this organization
+                # These populate the client's internal caches
+                await client._ensure_groups_cache()
+                await client._ensure_roles_cache()
+                # Cache projects directly since there's no groups/roles-style cache for projects yet
+                await client.list_projects(org_name=org_name)
+                
+                self._logger.info(
+                    "Braintrust caching completed", 
+                    org_name=org_name,
+                )
+                
+            except Exception as e:
+                self._logger.warning(
+                    "Failed to cache Braintrust resources",
+                    org_name=org_name,
+                    error=str(e),
+                )
+        
+        self._logger.info(
+            "Cache initialization completed",
+            cached_orgs=len(target_organizations),
         )
     
     async def generate_sync_plan(
@@ -212,6 +294,10 @@ class SyncPlanner:
         for org in target_organizations:
             if org not in self.braintrust_clients:
                 raise ValueError(f"No Braintrust client configured for org: {org}")
+        
+        # ========== Initialize All Caches During Planning ==========
+        # This eliminates redundant API calls during both planning and execution
+        await self._initialize_all_caches(target_organizations)
         
         self._logger.info(
             "Generating sync plan",
@@ -559,22 +645,8 @@ class SyncPlanner:
             client = self.braintrust_clients[org_name]
             
             try:
-                # ========== Optimization: Cache projects for planning ==========
-                # Fetch all projects once to avoid redundant API calls during planning
-                try:
-                    all_projects = await client.list_projects(org_name=org_name)
-                    self._logger.debug(
-                        "Cached projects for ACL planning",
-                        braintrust_org=org_name,
-                        total_projects=len(all_projects),
-                    )
-                except Exception as e:
-                    self._logger.error(
-                        "Failed to fetch projects for ACL planning",
-                        braintrust_org=org_name,
-                        error=str(e),
-                    )
-                    continue
+                # Projects are already cached by comprehensive cache initialization
+                all_projects = await client.list_projects(org_name=org_name)
                 
                 # Process each group assignment to generate ACL items
                 for assignment in config.group_assignments:

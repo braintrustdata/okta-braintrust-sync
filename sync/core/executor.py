@@ -112,10 +112,24 @@ class SyncExecutor:
         self.config = config
         
         # Initialize resource syncers
+        # Extract group assignment configuration if available
+        group_assignment_config = {}
+        if config and config.group_assignment and hasattr(config.group_assignment, 'get_config_for_org'):
+            # Create a dict mapping org names to their group assignment configs
+            for org_name in braintrust_clients.keys():
+                org_config = config.group_assignment.get_config_for_org(org_name)
+                if org_config:
+                    group_assignment_config[org_name] = org_config
+        elif config and config.group_assignment and hasattr(config.group_assignment, 'global_config'):
+            # Use global config for all orgs
+            for org_name in braintrust_clients.keys():
+                group_assignment_config[org_name] = config.group_assignment.global_config
+
         self.user_syncer = UserSyncer(
             okta_client=okta_client,
             braintrust_clients=braintrust_clients,
             state_manager=state_manager,
+            group_assignment_config=group_assignment_config,
         )
         
         self.group_syncer = GroupSyncer(

@@ -63,7 +63,9 @@ class BraintrustClient:
         self._last_request_time: Optional[float] = None
         
         # ========== Caching for performance optimization ==========
-        # Cache groups and roles to avoid repeated API calls during sync operations
+        # Cache users, groups and roles to avoid repeated API calls during sync operations
+        self._users_cache: Optional[List[User]] = None
+        self._users_cache_by_email: Optional[Dict[str, User]] = None
         self._groups_cache: Optional[List[Group]] = None
         self._roles_cache: Optional[List[Dict[str, Any]]] = None
         self._groups_cache_by_name: Optional[Dict[str, Group]] = None
@@ -129,7 +131,7 @@ class BraintrustClient:
             # Return info about the first org for health check purposes
             if org_list:
                 first_org = org_list[0]
-                return first_org.model_dump() if hasattr(first_org, 'model_dump') else dict(first_org)
+                return first_org.model_dump(mode='json') if hasattr(first_org, 'model_dump') else dict(first_org)
             else:
                 return {"organizations": [], "message": "No organizations found"}
         except Exception as e:
@@ -842,7 +844,7 @@ class BraintrustClient:
     # Search and Query Methods
     
     async def find_user_by_email(self, email: str) -> Optional[User]:
-        """Find a user by email address.
+        """Find a user by email address using cache for optimal performance.
         
         Args:
             email: Email address to search for
@@ -851,9 +853,27 @@ class BraintrustClient:
             User object if found, None otherwise
         """
         try:
+            # Use cached lookup if available, otherwise populate cache
+            if self._users_cache_by_email is None:
+                users = await self.list_users()
+                # Build email-to-user mapping for O(1) lookups
+                self._users_cache_by_email = {}
+                for user in users:
+                    user_email = (
+                        user.get('email') if isinstance(user, dict)
+                        else getattr(user, 'email', None)
+                    )
+                    if user_email:
+                        self._users_cache_by_email[user_email] = user
+            
+            # O(1) lookup instead of O(N) linear search
+            return self._users_cache_by_email.get(email)
+            
+        except Exception as e:
+            self._logger.warning("Error searching for user by email", email=email, error=str(e))
+            # Fallback to original method
             users = await self.list_users()
             for user in users:
-                # Handle both dict and object formats
                 user_email = (
                     user.get('email') if isinstance(user, dict)
                     else getattr(user, 'email', None)
@@ -861,12 +881,9 @@ class BraintrustClient:
                 if user_email == email:
                     return user
             return None
-        except Exception as e:
-            self._logger.warning("Error searching for user by email", email=email, error=str(e))
-            return None
     
     async def find_group_by_name(self, name: str) -> Optional[Group]:
-        """Find a group by name.
+        """Find a group by name using cache for optimal performance.
         
         Args:
             name: Group name to search for
@@ -875,18 +892,33 @@ class BraintrustClient:
             Group object if found, None otherwise
         """
         try:
+            # Use cached lookup if available, otherwise populate cache
+            if self._groups_cache_by_name is None:
+                groups = await self.list_groups()
+                # Build name-to-group mapping for O(1) lookups
+                self._groups_cache_by_name = {}
+                for group in groups:
+                    group_name = (
+                        group.get('name') if isinstance(group, dict)
+                        else getattr(group, 'name', None)
+                    )
+                    if group_name:
+                        self._groups_cache_by_name[group_name] = group
+            
+            # O(1) lookup instead of O(N) linear search
+            return self._groups_cache_by_name.get(name)
+            
+        except Exception as e:
+            self._logger.warning("Error searching for group by name", name=name, error=str(e))
+            # Fallback to original method
             groups = await self.list_groups()
             for group in groups:
-                # Handle both dict and object formats
                 group_name = (
                     group.get('name') if isinstance(group, dict)
                     else getattr(group, 'name', None)
                 )
                 if group_name == name:
                     return group
-            return None
-        except Exception as e:
-            self._logger.warning("Error searching for group by name", name=name, error=str(e))
             return None
     
     # ========== Caching Methods for Performance Optimization ==========
@@ -969,7 +1001,9 @@ class BraintrustClient:
             return await self.get_role_by_name(role_name)
     
     def clear_caches(self) -> None:
-        """Clear all caches. Useful when groups or roles are modified during sync."""
+        """Clear all caches. Useful when users, groups or roles are modified during sync."""
+        self._users_cache = None
+        self._users_cache_by_email = None
         self._groups_cache = None
         self._roles_cache = None
         self._groups_cache_by_name = None
@@ -1479,10 +1513,24 @@ class BraintrustClient:
             Dictionary with success status and results
         """
         try:
-            # Step 1: Get the group (using cache for performance)
+            # Step 1: Get the group (using cache for performance), create if missing
             group = await self.find_group_by_name_cached(group_name)
             if not group:
-                raise ResourceNotFoundError(f"Group '{group_name}' not found")
+                self._logger.info(
+                    "Group not found, creating it",
+                    group_name=group_name,
+                    org_name=org_name
+                )
+                # Auto-create the missing group with basic settings
+                group = await self.create_group(
+                    name=group_name,
+                    description=f"Auto-created group for role assignments",
+                    member_users=[],
+                    member_groups=[]
+                )
+                # Clear the groups cache since we just created a group
+                self._groups_cache = None
+                self._groups_cache_by_name = None
             
             group_id = group.get('id') if isinstance(group, dict) else getattr(group, 'id')
             
