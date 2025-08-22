@@ -161,6 +161,35 @@ class EnhancedSyncState(BaseModel):
     config_snapshot: Dict[str, Any] = Field(default_factory=dict)
     config_version: Optional[str] = None
     
+    def update_stats(self, stats_dict: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+        """Update statistics for the sync state.
+        
+        Args:
+            stats_dict: Dictionary of statistics to update (optional)
+            **kwargs: Additional statistics to update as keyword arguments
+        """
+        # Handle both dict argument and kwargs
+        if stats_dict:
+            self.stats.update(stats_dict)
+            # Check status in the provided dict
+            if stats_dict.get('status') == 'completed':
+                self.completed_at = datetime.now(timezone.utc)
+                self.status = 'completed'
+            elif stats_dict.get('status') == 'failed':
+                self.completed_at = datetime.now(timezone.utc)
+                self.status = 'failed'
+        
+        # Also handle kwargs
+        if kwargs:
+            self.stats.update(kwargs)
+            # Check status in kwargs
+            if kwargs.get('status') == 'completed':
+                self.completed_at = datetime.now(timezone.utc)
+                self.status = 'completed'
+            elif kwargs.get('status') == 'failed':
+                self.completed_at = datetime.now(timezone.utc)
+                self.status = 'failed'
+    
     def add_managed_resource(
         self,
         resource_id: str,
@@ -414,6 +443,98 @@ class EnhancedSyncState(BaseModel):
         
         return warnings
     
+    def get_braintrust_id(self, okta_resource_id: str, braintrust_org: str, resource_type: str) -> Optional[str]:
+        """Get Braintrust ID for an Okta resource (legacy compatibility method).
+        
+        Args:
+            okta_resource_id: Okta resource ID
+            braintrust_org: Braintrust organization 
+            resource_type: Type of resource (user, group, etc.)
+            
+        Returns:
+            Braintrust ID if mapping exists, None otherwise
+        """
+        # Check legacy mappings first for backward compatibility
+        if braintrust_org in self.resource_mappings:
+            if resource_type in self.resource_mappings[braintrust_org]:
+                for mapping in self.resource_mappings[braintrust_org][resource_type]:
+                    if mapping.get('okta_id') == okta_resource_id:
+                        return mapping.get('braintrust_id')
+        
+        # Check enhanced managed resources
+        for resource in self.managed_resources.values():
+            if (resource.resource_type.value == resource_type and 
+                resource.braintrust_org == braintrust_org):
+                # Check if this resource was created from the Okta resource
+                # Use a simple mapping approach - store okta_id in resource metadata
+                resource_name = getattr(resource, 'resource_name', None)
+                if resource_name == okta_resource_id:
+                    return resource.resource_id
+        
+        return None
+    
+    def add_mapping(self, okta_id: str, braintrust_id: str, braintrust_org: str, resource_type: str, **kwargs) -> None:
+        """Add resource mapping for tracking Okta to Braintrust relationships (legacy compatibility method).
+        
+        Args:
+            okta_id: Okta resource ID
+            braintrust_id: Braintrust resource ID
+            braintrust_org: Braintrust organization name
+            resource_type: Type of resource (user, group, etc.)
+            **kwargs: Additional mapping metadata
+        """
+        # Initialize org mappings if needed
+        if braintrust_org not in self.resource_mappings:
+            self.resource_mappings[braintrust_org] = {}
+        
+        if resource_type not in self.resource_mappings[braintrust_org]:
+            self.resource_mappings[braintrust_org][resource_type] = []
+        
+        # Add mapping
+        mapping = {
+            'okta_id': okta_id,
+            'braintrust_id': braintrust_id,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            **kwargs
+        }
+        
+        # Check if mapping already exists and update it
+        existing_mapping = None
+        for i, existing in enumerate(self.resource_mappings[braintrust_org][resource_type]):
+            if existing.get('okta_id') == okta_id:
+                existing_mapping = i
+                break
+        
+        if existing_mapping is not None:
+            self.resource_mappings[braintrust_org][resource_type][existing_mapping] = mapping
+        else:
+            self.resource_mappings[braintrust_org][resource_type].append(mapping)
+    
+    def mark_failed(self, resource_id: str, resource_type: str, error_message: str) -> None:
+        """Mark a resource operation as failed (legacy compatibility method).
+        
+        Args:
+            resource_id: Resource ID that failed
+            resource_type: Type of resource
+            error_message: Error message
+        """
+        # Update stats to track failures
+        if 'failed_operations' not in self.stats:
+            self.stats['failed_operations'] = []
+        
+        failure_record = {
+            'resource_id': resource_id,
+            'resource_type': resource_type,
+            'error_message': error_message,
+            'failed_at': datetime.now(timezone.utc).isoformat()
+        }
+        
+        self.stats['failed_operations'].append(failure_record)
+        
+        # Update failure counts
+        failure_key = f'failed_{resource_type}s'
+        self.stats[failure_key] = self.stats.get(failure_key, 0) + 1
+    
     def get_managed_resource_summary(self) -> Dict[str, Any]:
         """Get summary of managed resources."""
         return {
@@ -449,6 +570,22 @@ class EnhancedSyncState(BaseModel):
                 removed_count += 1
         
         return removed_count
+    
+    def mark_completed(self) -> None:
+        """Mark the sync state as completed."""
+        self.status = "completed"
+        self.completed_at = datetime.now(timezone.utc)
+    
+    def mark_failed(self, error_message: str) -> None:
+        """Mark the sync state as failed.
+        
+        Args:
+            error_message: Error message describing the failure
+        """
+        self.status = "failed"
+        self.completed_at = datetime.now(timezone.utc)
+        if 'error_message' not in self.stats:
+            self.stats['error_message'] = error_message
 
 
 class StateManager:
@@ -875,3 +1012,102 @@ class StateManager:
             return 0
         
         return self._current_state.cleanup_stale_resources(max_age_days)
+    
+    def get_braintrust_id(self, okta_resource_id: str, resource_type: str) -> Optional[str]:
+        """Get Braintrust ID for an Okta resource.
+        
+        Args:
+            okta_resource_id: Okta resource ID
+            resource_type: Type of resource (user, group, etc.)
+            
+        Returns:
+            Braintrust ID if mapping exists, None otherwise
+        """
+        if not self._current_state:
+            return None
+        
+        # Check legacy mappings first for backward compatibility
+        for org_mappings in self._current_state.resource_mappings.values():
+            if resource_type in org_mappings:
+                for mapping in org_mappings[resource_type]:
+                    if mapping.get('okta_id') == okta_resource_id:
+                        return mapping.get('braintrust_id')
+        
+        # Check enhanced managed resources
+        for resource in self._current_state.managed_resources.values():
+            if resource.resource_type.value == resource_type:
+                # Check if this resource was created from the Okta resource
+                # Use a simple mapping approach - store okta_id in resource metadata
+                resource_name = getattr(resource, 'resource_name', None)
+                if resource_name == okta_resource_id:
+                    return resource.resource_id
+        
+        return None
+    
+    def add_mapping(self, org_name: str, resource_type: str, okta_id: str, braintrust_id: str, **kwargs) -> None:
+        """Add resource mapping for tracking Okta to Braintrust relationships.
+        
+        Args:
+            org_name: Braintrust organization name
+            resource_type: Type of resource (user, group, etc.)
+            okta_id: Okta resource ID
+            braintrust_id: Braintrust resource ID
+            **kwargs: Additional mapping metadata
+        """
+        if not self._current_state:
+            return
+        
+        # Initialize org mappings if needed
+        if org_name not in self._current_state.resource_mappings:
+            self._current_state.resource_mappings[org_name] = {}
+        
+        if resource_type not in self._current_state.resource_mappings[org_name]:
+            self._current_state.resource_mappings[org_name][resource_type] = []
+        
+        # Add mapping
+        mapping = {
+            'okta_id': okta_id,
+            'braintrust_id': braintrust_id,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            **kwargs
+        }
+        
+        # Check if mapping already exists and update it
+        existing_mapping = None
+        for i, existing in enumerate(self._current_state.resource_mappings[org_name][resource_type]):
+            if existing.get('okta_id') == okta_id:
+                existing_mapping = i
+                break
+        
+        if existing_mapping is not None:
+            self._current_state.resource_mappings[org_name][resource_type][existing_mapping] = mapping
+        else:
+            self._current_state.resource_mappings[org_name][resource_type].append(mapping)
+    
+    def mark_failed(self, resource_id: str, resource_type: str, error_message: str) -> None:
+        """Mark a resource operation as failed.
+        
+        Args:
+            resource_id: Resource ID that failed
+            resource_type: Type of resource
+            error_message: Error message
+        """
+        if not self._current_state:
+            return
+        
+        # Update stats to track failures
+        if 'failed_operations' not in self._current_state.stats:
+            self._current_state.stats['failed_operations'] = []
+        
+        failure_record = {
+            'resource_id': resource_id,
+            'resource_type': resource_type,
+            'error_message': error_message,
+            'failed_at': datetime.now(timezone.utc).isoformat()
+        }
+        
+        self._current_state.stats['failed_operations'].append(failure_record)
+        
+        # Update failure counts
+        failure_key = f'failed_{resource_type}s'
+        self._current_state.stats[failure_key] = self._current_state.stats.get(failure_key, 0) + 1

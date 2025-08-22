@@ -31,9 +31,15 @@ class SyncOperation(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
     
-    def mark_completed(self):
-        """Mark operation as completed."""
+    def mark_completed(self, braintrust_id: Optional[str] = None):
+        """Mark operation as completed.
+        
+        Args:
+            braintrust_id: Optional Braintrust resource ID to update
+        """
         self.status = "completed"
+        if braintrust_id:
+            self.braintrust_id = braintrust_id
     
     def mark_failed(self, error: str):
         """Mark operation as failed."""

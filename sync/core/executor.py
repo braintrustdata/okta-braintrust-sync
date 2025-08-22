@@ -211,6 +211,9 @@ class SyncExecutor:
                     max_concurrent=max_concurrent_operations,
                 )
             
+            # TODO: Execute role and ACL sync phases
+            # Role and ACL syncers are not yet implemented
+            # For now, roles and ACLs are handled differently
             # Finalization phase
             progress.start_phase("finalizing")
             self._notify_progress(progress)
@@ -413,11 +416,9 @@ class SyncExecutor:
             )
             
             # Execute the item
-            results = await syncer.execute_sync_plan([item], dry_run=dry_run)
+            result = await syncer._execute_plan_item(item, dry_run=dry_run)
             
-            if results:
-                result = results[0]
-                
+            if result:
                 # Log audit event for this sync operation
                 self.audit_logger.log_sync_result(result)
                 

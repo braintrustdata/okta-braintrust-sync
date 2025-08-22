@@ -191,10 +191,12 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                 )
             
             # Get user ID safely
-            okta_user_id = (
-                okta_resource.get("id") if isinstance(okta_resource, dict)
-                else okta_resource.id
-            )
+            okta_user_id = None
+            if okta_resource is not None:
+                okta_user_id = (
+                    okta_resource.get("id") if isinstance(okta_resource, dict)
+                    else getattr(okta_resource, 'id', None)
+                )
             
             self._logger.debug(
                 "Inviting Braintrust user",
@@ -202,7 +204,7 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                 email=user_data.get("email"),
                 braintrust_org=braintrust_org,
                 groups=group_names or [],
-                auto_assigned=self.enable_auto_group_assignment and not additional_data.get("group_names"),
+                auto_assigned=self.enable_auto_group_assignment and not (additional_data and additional_data.get("group_names")),
             )
             
             # Use invitation API instead of direct user creation
@@ -239,10 +241,12 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             
         except Exception as e:
             # Get user ID safely for error logging
-            okta_user_id = (
-                okta_resource.get("id") if isinstance(okta_resource, dict)
-                else okta_resource.id
-            )
+            okta_user_id = None
+            if okta_resource is not None:
+                okta_user_id = (
+                    okta_resource.get("id") if isinstance(okta_resource, dict)
+                    else getattr(okta_resource, 'id', None)
+                )
             self._logger.error(
                 "Failed to invite Braintrust user",
                 okta_user_id=okta_user_id,

@@ -372,8 +372,58 @@ class BraintrustClient:
         """
         try:
             self._request_count += 1
-            group = self.client.groups.update(group_id, **updates)
-            self._logger.info("Updated group", group_id=group_id, fields=list(updates.keys()))
+            
+            # Handle membership updates with incremental API calls
+            if 'member_users' in updates or 'member_groups' in updates:
+                # Get current group to calculate differences
+                current_group = await self.get_group(group_id)
+                current_users = set(getattr(current_group, 'member_users', []) or [])
+                current_groups = set(getattr(current_group, 'member_groups', []) or [])
+                
+                # Calculate user membership changes
+                if 'member_users' in updates:
+                    target_users = set(updates['member_users'] or [])
+                    users_to_add = target_users - current_users
+                    users_to_remove = current_users - target_users
+                    
+                    # Apply user changes
+                    if users_to_add:
+                        await self.client.groups.update(group_id, add_member_users=list(users_to_add))
+                        self._logger.debug("Added users to group", group_id=group_id, users_added=len(users_to_add))
+                    
+                    if users_to_remove:
+                        await self.client.groups.update(group_id, remove_member_users=list(users_to_remove))
+                        self._logger.debug("Removed users from group", group_id=group_id, users_removed=len(users_to_remove))
+                
+                # Calculate group membership changes
+                if 'member_groups' in updates:
+                    target_groups = set(updates['member_groups'] or [])
+                    groups_to_add = target_groups - current_groups
+                    groups_to_remove = current_groups - target_groups
+                    
+                    # Apply group changes
+                    if groups_to_add:
+                        await self.client.groups.update(group_id, add_member_groups=list(groups_to_add))
+                        self._logger.debug("Added groups to group", group_id=group_id, groups_added=len(groups_to_add))
+                    
+                    if groups_to_remove:
+                        await self.client.groups.update(group_id, remove_member_groups=list(groups_to_remove))
+                        self._logger.debug("Removed groups from group", group_id=group_id, groups_removed=len(groups_to_remove))
+                
+                # Handle non-membership updates
+                non_membership_updates = {k: v for k, v in updates.items() if k not in ['member_users', 'member_groups']}
+                if non_membership_updates:
+                    group = self.client.groups.update(group_id, **non_membership_updates)
+                else:
+                    # Get updated group to return
+                    group = await self.get_group(group_id)
+                
+                self._logger.info("Updated group incrementally", group_id=group_id, fields=list(updates.keys()))
+            else:
+                # For non-membership updates, use regular update
+                group = self.client.groups.update(group_id, **updates)
+                self._logger.info("Updated group", group_id=group_id, fields=list(updates.keys()))
+            
             return group
         except Exception as e:
             self._error_count += 1
@@ -1191,8 +1241,9 @@ class BraintrustClient:
             self._request_count += 1
             
             # Construct URL with query parameters
+            # Note: org_name is not needed as the API key is already tied to an organization
             from urllib.parse import urlencode
-            params = {"org_name": org_name}
+            params = {}
             if object_type:
                 params["object_type"] = object_type
             if group_id:
@@ -1200,8 +1251,11 @@ class BraintrustClient:
             if user_id:
                 params["user_id"] = user_id
             
-            query_params = urlencode(params)
-            endpoint = f"/v1/acl/list_org?{query_params}"
+            if params:
+                query_params = urlencode(params)
+                endpoint = f"/v1/acl/list_org?{query_params}"
+            else:
+                endpoint = "/v1/acl/list_org"
             response = await self._make_request("GET", endpoint)
             
             return response.get("objects", [])
