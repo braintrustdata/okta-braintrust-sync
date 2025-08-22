@@ -146,6 +146,12 @@ def plan(
         # Show operations summary by organization and type
         formatter.format_summary_matrix(sync_plan)
         
+        # Show users in table format
+        formatter.format_users_table(sync_plan)
+        
+        # Show groups in table format
+        formatter.format_groups_table(sync_plan)
+        
         # Show detailed ACL assignments in matrix format
         formatter.format_acl_matrix(sync_plan)
     
@@ -211,7 +217,15 @@ def apply(
         # Show operations summary by organization and type
         formatter.format_summary_matrix(sync_plan)
         
-        # Show detailed ACL assignments in matrix format
+        # Show users in table format
+        formatter.format_users_table(sync_plan)
+        
+        # Show groups in table format
+        formatter.format_groups_table(sync_plan)
+        
+        # Show detailed ACL assignments in matrix format with priority explanation
+        console.print()
+        console.print("[dim]Note: Priority determines which rule takes precedence (higher = higher priority)[/dim]")
         formatter.format_acl_matrix(sync_plan)
         
         if sync_plan.total_items == 0:

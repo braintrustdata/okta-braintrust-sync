@@ -181,7 +181,7 @@ class SyncPlanFormatter:
             return
         
         self.console.print()
-        self.console.print("[bold blue]Access Control Assignments[/bold blue]")
+        self.console.print("[bold blue]Access Control Assignments (Groups → Roles → Projects)[/bold blue]")
         self.console.print()
         
         # Group ACLs by organization
@@ -234,6 +234,94 @@ class SyncPlanFormatter:
                 # Add separator line between roles if there are multiple
                 if len(by_role) > 1 and role_name != list(by_role.keys())[-1]:
                     table.add_row("", "", "", "", "")
+            
+            self.console.print(table)
+            self.console.print()
+    
+    def format_users_table(self, plan: SyncPlan) -> None:
+        """Display users in a table format grouped by organization."""
+        user_items = [item for item in plan.get_all_items() if item.okta_resource_type == "user"]
+        
+        if not user_items:
+            return
+        
+        self.console.print()
+        self.console.print("[bold blue]User Sync Operations[/bold blue]")
+        self.console.print()
+        
+        # Group by organization
+        by_org = {}
+        for item in user_items:
+            org = sanitize_log_input(item.braintrust_org)
+            if org not in by_org:
+                by_org[org] = []
+            by_org[org].append(item)
+        
+        for org_name, items in by_org.items():
+            table = Table(title=f"Users - {org_name}")
+            table.add_column("Email", style="cyan")
+            table.add_column("Name", style="green")
+            table.add_column("Status", style="yellow")
+            table.add_column("Action", style="bold")
+            
+            for item in sorted(items, key=lambda x: x.okta_resource.get("profile", {}).get("email", "")):
+                profile = item.okta_resource.get("profile", {})
+                email = sanitize_log_input(profile.get("email") or profile.get("login", "Unknown"))
+                name = sanitize_log_input(f"{profile.get('firstName', '')} {profile.get('lastName', '')}".strip() or "N/A")
+                status = sanitize_log_input(item.okta_resource.get("status", "Unknown"))
+                
+                action_style = {
+                    "create": "[green]+[/green]",
+                    "update": "[yellow]~[/yellow]",
+                    "skip": "[blue]=[/blue]"
+                }.get(item.action, item.action)
+                
+                table.add_row(email, name, status, action_style)
+            
+            self.console.print(table)
+            self.console.print()
+    
+    def format_groups_table(self, plan: SyncPlan) -> None:
+        """Display groups in a table format grouped by organization."""
+        group_items = [item for item in plan.get_all_items() if item.okta_resource_type == "group"]
+        
+        if not group_items:
+            return
+        
+        self.console.print()
+        self.console.print("[bold blue]Group Sync Operations[/bold blue]")
+        self.console.print()
+        
+        # Group by organization
+        by_org = {}
+        for item in group_items:
+            org = sanitize_log_input(item.braintrust_org)
+            if org not in by_org:
+                by_org[org] = []
+            by_org[org].append(item)
+        
+        for org_name, items in by_org.items():
+            table = Table(title=f"Groups - {org_name}")
+            table.add_column("Group Name", style="cyan")
+            table.add_column("Description", style="dim")
+            table.add_column("Type", style="yellow")
+            table.add_column("Action", style="bold")
+            
+            for item in sorted(items, key=lambda x: x.okta_resource.get("profile", {}).get("name", "")):
+                profile = item.okta_resource.get("profile", {})
+                name = sanitize_log_input(profile.get("name") or item.okta_resource.get("name", "Unknown"))
+                description = sanitize_log_input(profile.get("description", "")[:50] or "N/A")
+                if len(profile.get("description", "")) > 50:
+                    description += "..."
+                group_type = sanitize_log_input(item.okta_resource.get("type", "OKTA_GROUP"))
+                
+                action_style = {
+                    "create": "[green]+[/green]",
+                    "update": "[yellow]~[/yellow]",
+                    "skip": "[blue]=[/blue]"
+                }.get(item.action, item.action)
+                
+                table.add_row(name, description, group_type, action_style)
             
             self.console.print(table)
             self.console.print()
