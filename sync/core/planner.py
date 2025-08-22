@@ -288,7 +288,8 @@ class SyncPlanner:
             resource_types = ["user", "group", "role", "acl"]
         
         if okta_filters is None:
-            okta_filters = {}
+            # Extract filters from configuration if not provided
+            okta_filters = self._extract_okta_filters_from_config()
         
         # Validate organizations
         for org in target_organizations:
@@ -829,8 +830,8 @@ class SyncPlanner:
         Returns:
             Sync rules dictionary with safe defaults
         """
-        # Use safe defaults since the current config model doesn't have these fields
-        return {
+        # Start with safe defaults since the current config model doesn't have these fields
+        sync_rules = {
             "sync_all": True,
             "create_missing": True,  # Default: create missing resources
             "update_existing": True,  # Default: update existing resources
@@ -843,7 +844,46 @@ class SyncPlanner:
             "group_profile_filters": {},  # Default: no group profile filters (dict by org)
             "min_group_members": {},  # Default: no minimum members (dict by org)
             "limit": None,  # Default: no limit
+            "remove_extra": False,  # Default: don't remove extra resources
         }
+        
+        # Override with actual sync_options from config if available
+        if hasattr(self.config, 'sync_options') and self.config.sync_options:
+            sync_options = self.config.sync_options
+            if hasattr(sync_options, 'remove_extra'):
+                sync_rules["remove_extra"] = sync_options.remove_extra
+            if hasattr(sync_options, 'batch_size'):
+                sync_rules["batch_size"] = sync_options.batch_size
+            if hasattr(sync_options, 'max_retries'):
+                sync_rules["max_retries"] = sync_options.max_retries
+            if hasattr(sync_options, 'continue_on_error'):
+                sync_rules["continue_on_error"] = sync_options.continue_on_error
+        
+        return sync_rules
+    
+    def _extract_okta_filters_from_config(self) -> Dict[str, str]:
+        """Extract Okta filters from sync configuration.
+        
+        Returns:
+            Dictionary mapping resource types to their Okta filters
+        """
+        filters = {}
+        
+        # Extract user filters from user sync mappings
+        if self.config.sync_rules.users and self.config.sync_rules.users.mappings:
+            # Use the first mapping's filter as the default user filter
+            # TODO: In the future, support multiple filters or merge them
+            first_mapping = self.config.sync_rules.users.mappings[0]
+            if first_mapping.okta_filter:
+                filters["user"] = first_mapping.okta_filter
+        
+        # Extract group filters from group sync mappings  
+        if self.config.sync_rules.groups and self.config.sync_rules.groups.mappings:
+            first_mapping = self.config.sync_rules.groups.mappings[0]
+            if first_mapping.okta_group_filter:
+                filters["group"] = first_mapping.okta_group_filter
+        
+        return filters
     
     async def validate_plan_preconditions(
         self,

@@ -5,10 +5,10 @@ import json
 import time
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -114,7 +114,27 @@ class ProjectState(BaseModel):
     managed_acl_ids: List[str] = Field(default_factory=list)
     
     # Pattern matches (for debugging)
-    matched_patterns: List[str] = Field(default_factory=list)
+    matched_patterns: List[Any] = Field(default_factory=list)
+    
+    @field_validator('matched_patterns', mode='before')
+    @classmethod
+    def flatten_matched_patterns(cls, v):
+        """Flatten nested lists to handle backward compatibility."""
+        if not v:
+            return []
+        
+        # If it's a list of lists, flatten it
+        if isinstance(v, list) and v and isinstance(v[0], list):
+            flattened = []
+            for item in v:
+                if isinstance(item, list):
+                    flattened.extend(str(x) for x in item)
+                else:
+                    flattened.append(str(item))
+            return flattened
+        
+        # Otherwise, ensure all items are strings
+        return [str(item) for item in v] if isinstance(v, list) else []
 
 
 class DriftWarning(BaseModel):
@@ -473,6 +493,40 @@ class EnhancedSyncState(BaseModel):
         
         return None
     
+    def get_mapping(self, okta_id: str, braintrust_org: str, resource_type: str) -> Optional[Dict[str, Any]]:
+        """Get mapping for an Okta resource (compatibility method).
+        
+        Args:
+            okta_id: Okta resource identifier
+            braintrust_org: Braintrust organization name
+            resource_type: Resource type
+            
+        Returns:
+            Mapping dictionary with braintrust_id or None
+        """
+        # Check the new structure: resource_mappings[org][type] = [list of mappings]
+        if braintrust_org in self.resource_mappings:
+            org_mappings = self.resource_mappings[braintrust_org]
+            if resource_type in org_mappings:
+                type_mappings = org_mappings[resource_type]
+                if isinstance(type_mappings, list):
+                    for mapping in type_mappings:
+                        if isinstance(mapping, dict) and mapping.get('okta_id') == okta_id:
+                            # Create a simple object with braintrust_id attribute for compatibility
+                            class MappingResult:
+                                def __init__(self, braintrust_id):
+                                    self.braintrust_id = braintrust_id
+                            return MappingResult(mapping.get('braintrust_id'))
+        
+        # Check the legacy flat structure: resource_mappings[key] = mapping
+        mapping_key = f"{okta_id}:{braintrust_org}:{resource_type}"
+        if mapping_key in self.resource_mappings:
+            legacy_mapping = self.resource_mappings[mapping_key]
+            if isinstance(legacy_mapping, dict):
+                return legacy_mapping
+                
+        return None
+    
     def add_mapping(self, okta_id: str, braintrust_id: str, braintrust_org: str, resource_type: str, **kwargs) -> None:
         """Add resource mapping for tracking Okta to Braintrust relationships (legacy compatibility method).
         
@@ -659,10 +713,31 @@ class StateManager:
             return None
         
         try:
+            self._logger.debug(f"Attempting to load state file: {state_file}")
             with open(state_file, 'r', encoding='utf-8') as f:
                 state_data = json.load(f)
             
-            self._current_state = EnhancedSyncState.model_validate(state_data)
+            self._logger.debug(f"Loaded JSON data, attempting model validation")
+            # Try strict validation first
+            try:
+                self._current_state = EnhancedSyncState.model_validate(state_data)
+            except Exception as validation_error:
+                # If strict validation fails, try to load with partial data for backward compatibility
+                self._logger.warning(f"Strict validation failed, attempting backward compatibility loading: {str(validation_error)}")
+                
+                # Create a minimal state with just the essential fields for delete functionality
+                minimal_state_data = {
+                    "sync_id": state_data.get("sync_id", sync_id),
+                    "started_at": state_data.get("started_at", "2021-01-01T00:00:00Z"),
+                    "status": state_data.get("status", "completed"),
+                    "resource_mappings": state_data.get("resource_mappings", {}),
+                    "managed_resources": state_data.get("managed_resources", {}),
+                    "managed_roles": state_data.get("managed_roles", {}),
+                    "managed_acls": state_data.get("managed_acls", {}),
+                    "discovered_projects": {},  # Skip problematic projects for now
+                    "drift_warnings": state_data.get("drift_warnings", [])
+                }
+                self._current_state = EnhancedSyncState.model_validate(minimal_state_data)
             
             self._logger.info(
                 "Loaded enhanced sync state", 
@@ -675,7 +750,8 @@ class StateManager:
             return self._current_state
             
         except Exception as e:
-            self._logger.error("Failed to load sync state", sync_id=sync_id, error=str(e))
+            import traceback
+            self._logger.error("Failed to load sync state", sync_id=sync_id, error=str(e), traceback=traceback.format_exc())
             return None
     
     def save_sync_state(self, state: Optional[EnhancedSyncState] = None) -> bool:
@@ -732,8 +808,15 @@ class StateManager:
             List of sync IDs
         """
         try:
+            # Look for both sync_*.json and exec_*.json patterns
             sync_files = list(self.state_dir.glob("sync_*.json"))
-            sync_ids = [f.stem for f in sync_files]
+            exec_files = list(self.state_dir.glob("exec_*.json"))
+            
+            # Filter out execution tracking files - we want only main state files
+            main_state_files = [f for f in (sync_files + exec_files) 
+                              if not f.stem.endswith('_completed') and 'execution' not in f.stem]
+            
+            sync_ids = [f.stem for f in main_state_files]
             return sorted(sync_ids)
         except Exception as e:
             self._logger.error("Failed to list sync states", error=str(e))
@@ -780,12 +863,17 @@ class StateManager:
             Latest EnhancedSyncState instance or None
         """
         sync_ids = self.list_sync_states()
+        self._logger.debug(f"Found sync IDs: {sync_ids}")
         if not sync_ids:
+            self._logger.debug("No sync IDs found")
             return None
         
         # Sync IDs are timestamp-based, so the last one is most recent
         latest_sync_id = sync_ids[-1]
-        return self.load_sync_state(latest_sync_id)
+        self._logger.debug(f"Loading latest sync state: {latest_sync_id}")
+        result = self.load_sync_state(latest_sync_id)
+        self._logger.debug(f"Loaded state result: {result is not None}")
+        return result
     
     def create_checkpoint(self, checkpoint_name: str = "checkpoint") -> bool:
         """Create a checkpoint of the current state.

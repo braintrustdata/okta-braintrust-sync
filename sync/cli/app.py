@@ -99,64 +99,67 @@ def plan(
 ) -> None:
     """Show what would be synchronized without making changes."""
     
-    async def run_plan():
-        
-        config = load_configuration(config_file)
-        
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            # Create clients
-            progress.add_task("Creating API clients...", total=None)
-            try:
-                okta_client = ClientFactory.create_okta_client(config.okta)
-                braintrust_clients = ClientFactory.create_braintrust_clients(config)
-            except Exception as e:
-                console.print(f"[red]Failed to create clients: {sanitize_log_input(str(e))}[/red]")
-                raise typer.Exit(1)
+    def run_plan_sync():
+        async def run_plan():
+            config = load_configuration(config_file)
             
-            # Validate connectivity
-            progress.add_task("Checking API connectivity...", total=None)
-            health_results = ClientFactory.validate_clients(okta_client, braintrust_clients)
-            unhealthy = [name for name, healthy in health_results.items() if not healthy]
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                # Create clients
+                progress.add_task("Creating API clients...", total=None)
+                try:
+                    okta_client = ClientFactory.create_okta_client(config.okta)
+                    braintrust_clients = ClientFactory.create_braintrust_clients(config)
+                except Exception as e:
+                    console.print(f"[red]Failed to create clients: {sanitize_log_input(str(e))}[/red]")
+                    raise typer.Exit(1)
+                
+                # Validate connectivity
+                progress.add_task("Checking API connectivity...", total=None)
+                health_results = await ClientFactory.validate_clients(okta_client, braintrust_clients)
+                unhealthy = [name for name, healthy in health_results.items() if not healthy]
+                
+                if unhealthy:
+                    console.print(f"[red]API connectivity issues: {', '.join(unhealthy)}[/red]")
+                    raise typer.Exit(1)
+                
+                # Create components
+                progress.add_task("Initializing sync components...", total=None)
+                state_manager = ComponentFactory.create_state_manager(config)
+                planner = ComponentFactory.create_sync_planner(
+                    okta_client, braintrust_clients, state_manager, config
+                )
+                
+                # Generate plan
+                progress.add_task("Generating sync plan...", total=None)
+                sync_plan = await planner.generate_sync_plan()
             
-            if unhealthy:
-                console.print(f"[red]API connectivity issues: {', '.join(unhealthy)}[/red]")
-                raise typer.Exit(1)
+            # Display plan in multiple formats for best review experience
+            formatter = SyncPlanFormatter(console)
             
-            # Create components
-            progress.add_task("Initializing sync components...", total=None)
-            state_manager = ComponentFactory.create_state_manager(config)
-            planner = ComponentFactory.create_sync_planner(
-                okta_client, braintrust_clients, state_manager, config
-            )
+            # Show high-level resource summary first
+            formatter.format_resource_summary(sync_plan)
             
-            # Generate plan
-            progress.add_task("Generating sync plan...", total=None)
-            sync_plan = await planner.generate_sync_plan()
+            # Show operations summary by organization and type
+            formatter.format_summary_matrix(sync_plan)
+            
+            # Show users in table format
+            formatter.format_users_table(sync_plan)
+            
+            # Show groups in table format
+            formatter.format_groups_table(sync_plan)
+            
+            # Show detailed ACL assignments in matrix format
+            formatter.format_acl_matrix(sync_plan)
         
-        # Display plan in multiple formats for best review experience
-        formatter = SyncPlanFormatter(console)
-        
-        # Show high-level resource summary first
-        formatter.format_resource_summary(sync_plan)
-        
-        # Show operations summary by organization and type
-        formatter.format_summary_matrix(sync_plan)
-        
-        # Show users in table format
-        formatter.format_users_table(sync_plan)
-        
-        # Show groups in table format
-        formatter.format_groups_table(sync_plan)
-        
-        # Show detailed ACL assignments in matrix format
-        formatter.format_acl_matrix(sync_plan)
+        # Run the async function
+        asyncio.run(run_plan())
     
     try:
-        asyncio.run(run_plan())
+        run_plan_sync()
     except typer.Exit:
         raise
     except Exception as e:
@@ -269,7 +272,17 @@ def apply(
             raise typer.Exit(1)
     
     try:
-        asyncio.run(run_apply())
+        # Handle existing event loop gracefully
+        try:
+            loop = asyncio.get_running_loop()
+            # If we're already in an event loop, create a task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, run_apply())
+                future.result()
+        except RuntimeError:
+            # No event loop running, safe to use asyncio.run()
+            asyncio.run(run_apply())
     except typer.Exit:
         raise
     except Exception as e:

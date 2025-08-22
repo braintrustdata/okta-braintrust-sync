@@ -146,9 +146,17 @@ class SyncPlanFormatter:
             if org not in by_org_and_type:
                 by_org_and_type[org] = {}
             if resource_type not in by_org_and_type[org]:
-                by_org_and_type[org][resource_type] = {"create": 0, "update": 0, "skip": 0}
+                by_org_and_type[org][resource_type] = {"create": 0, "update": 0, "skip": 0, "delete": 0}
             
-            by_org_and_type[org][resource_type][item.action] += 1
+            # Handle the action - get the enum value if it's an enum, otherwise use string
+            if hasattr(item.action, 'value'):
+                action_key = item.action.value
+            else:
+                action_key = str(item.action).lower()
+            
+            if action_key not in by_org_and_type[org][resource_type]:
+                by_org_and_type[org][resource_type][action_key] = 0
+            by_org_and_type[org][resource_type][action_key] += 1
         
         # Display summary table for each organization
         for org_name, types in by_org_and_type.items():
@@ -156,15 +164,17 @@ class SyncPlanFormatter:
             table.add_column("Resource Type", style="cyan")
             table.add_column("Create", style="green")
             table.add_column("Update", style="yellow")
+            table.add_column("Delete", style="red")
             table.add_column("Skip", style="blue")
             table.add_column("Total", style="bold")
             
             for resource_type, counts in types.items():
-                total = counts["create"] + counts["update"] + counts["skip"]
+                total = counts["create"] + counts["update"] + counts.get("delete", 0) + counts["skip"]
                 table.add_row(
                     resource_type.title(),
                     str(counts["create"]) if counts["create"] > 0 else "-",
                     str(counts["update"]) if counts["update"] > 0 else "-",
+                    str(counts.get("delete", 0)) if counts.get("delete", 0) > 0 else "-",
                     str(counts["skip"]) if counts["skip"] > 0 else "-",
                     str(total)
                 )

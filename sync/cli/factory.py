@@ -127,7 +127,7 @@ class ClientFactory:
         return clients
     
     @staticmethod
-    def validate_clients(
+    async def validate_clients(
         okta_client: OktaClient,
         braintrust_clients: Dict[str, BraintrustClient]
     ) -> Dict[str, bool]:
@@ -140,51 +140,46 @@ class ClientFactory:
         Returns:
             Dictionary of client name to health status
         """
-        import asyncio
+        results = {}
         
-        async def check_health():
-            results = {}
-            
-            # Check Okta client
+        # Check Okta client
+        try:
+            okta_healthy = await okta_client.health_check()
+            results["okta"] = okta_healthy
+            logger.info(
+                "Okta health check",
+                healthy=okta_healthy,
+                domain=sanitize_log_input(okta_client.domain)
+            )
+        except Exception as e:
+            results["okta"] = False
+            logger.error(
+                "Okta health check failed",
+                error=sanitize_log_input(str(e)),
+                domain=sanitize_log_input(okta_client.domain)
+            )
+        
+        # Check Braintrust clients
+        for org_name, client in braintrust_clients.items():
             try:
-                okta_healthy = await okta_client.health_check()
-                results["okta"] = okta_healthy
+                bt_healthy = await client.health_check()
+                results[f"braintrust_{org_name}"] = bt_healthy
                 logger.info(
-                    "Okta health check",
-                    healthy=okta_healthy,
-                    domain=sanitize_log_input(okta_client.domain)
+                    "Braintrust health check",
+                    org_name=sanitize_log_input(org_name),
+                    healthy=bt_healthy,
+                    api_url=sanitize_log_input(client.api_url)
                 )
             except Exception as e:
-                results["okta"] = False
+                results[f"braintrust_{org_name}"] = False
                 logger.error(
-                    "Okta health check failed",
+                    "Braintrust health check failed",
+                    org_name=sanitize_log_input(org_name),
                     error=sanitize_log_input(str(e)),
-                    domain=sanitize_log_input(okta_client.domain)
+                    api_url=sanitize_log_input(client.api_url)
                 )
-            
-            # Check Braintrust clients
-            for org_name, client in braintrust_clients.items():
-                try:
-                    bt_healthy = await client.health_check()
-                    results[f"braintrust_{org_name}"] = bt_healthy
-                    logger.info(
-                        "Braintrust health check",
-                        org_name=sanitize_log_input(org_name),
-                        healthy=bt_healthy,
-                        api_url=sanitize_log_input(client.api_url)
-                    )
-                except Exception as e:
-                    results[f"braintrust_{org_name}"] = False
-                    logger.error(
-                        "Braintrust health check failed",
-                        org_name=sanitize_log_input(org_name),
-                        error=sanitize_log_input(str(e)),
-                        api_url=sanitize_log_input(client.api_url)
-                    )
-            
-            return results
         
-        return asyncio.run(check_health())
+        return results
 
 
 class ComponentFactory:

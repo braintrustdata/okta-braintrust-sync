@@ -509,6 +509,15 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
         plan_items = []
         
         try:
+            # Check if remove_extra is enabled - if not, skip deletion planning
+            if not sync_rules.get('remove_extra', False):
+                self._logger.debug(
+                    "Skipping deletion planning - remove_extra is disabled",
+                    braintrust_org=braintrust_org,
+                    resource_type=self.resource_type,
+                )
+                return []
+            
             # Get state mappings to identify resources managed by this sync tool
             managed_resources = self._get_managed_resources(braintrust_org)
             
@@ -573,13 +582,44 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
         managed_resources = {}
         
         try:
-            # Load persistent mappings from state
-            persistent_mappings = self.state_manager._load_persistent_mappings()
+            # Get current state from state manager, fall back to latest if none loaded
+            current_state = self.state_manager.get_current_state()
+            if not current_state:
+                current_state = self.state_manager.get_latest_sync_state()
             
-            for mapping_key, mapping in persistent_mappings.items():
-                if (mapping.resource_type == self.resource_type and 
-                    mapping.braintrust_org == braintrust_org):
-                    managed_resources[mapping.braintrust_id] = mapping.okta_id
+            if not current_state:
+                self._logger.debug(
+                    "No current or latest state available for managed resources",
+                    braintrust_org=braintrust_org,
+                    resource_type=self.resource_type,
+                )
+                return managed_resources
+            
+            # Look through resource mappings for this org and resource type
+            # Structure: resource_mappings[org_name][resource_type] = [list of mappings]
+            if braintrust_org in current_state.resource_mappings:
+                org_mappings = current_state.resource_mappings[braintrust_org]
+                if self.resource_type in org_mappings:
+                    type_mappings = org_mappings[self.resource_type]
+                    if isinstance(type_mappings, list):
+                        for mapping in type_mappings:
+                            if isinstance(mapping, dict) and 'okta_id' in mapping and 'braintrust_id' in mapping:
+                                managed_resources[mapping['braintrust_id']] = mapping['okta_id']
+            
+            # Also check managed_resources collection if available
+            if hasattr(current_state, 'managed_resources'):
+                for resource_id, resource in current_state.managed_resources.items():
+                    if (resource.resource_type == self.resource_type and 
+                        resource.braintrust_org == braintrust_org and
+                        resource.created_by_sync):
+                        # For managed resources, we might not have the okta_id directly
+                        # Try to find it from the resource_mappings
+                        for mapping in current_state.resource_mappings.values():
+                            if (mapping.braintrust_id == resource_id and 
+                                mapping.resource_type == self.resource_type and
+                                mapping.braintrust_org == braintrust_org):
+                                managed_resources[resource_id] = mapping.okta_id
+                                break
             
             self._logger.debug(
                 "Loaded managed resources",
