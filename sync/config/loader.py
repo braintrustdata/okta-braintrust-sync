@@ -9,6 +9,10 @@ import yaml
 from pydantic import ValidationError
 
 from sync.config.models import SyncConfig
+from sync.security.validation import (
+    sanitize_log_input, validate_environment_variable_name, validate_file_path,
+    validate_cron_expression
+)
 
 
 class ConfigurationError(Exception):
@@ -30,11 +34,14 @@ ALLOWED_ENV_VARS: Set[str] = {
     # API Credentials
     "OKTA_API_TOKEN",
     "BRAINTRUST_API_KEY",
+    "BRAINTRUST_PROD_API_KEY",
+    "BRAINTRUST_DEV_API_KEY",
     
     # Organization Configuration
     "BRAINTRUST_ORG_ID",
     "BRAINTRUST_ORG_NAME",
     "OKTA_DOMAIN",
+    "OKTA_ORG_NAME",
     
     # Logging and Monitoring
     "LOG_LEVEL",
@@ -84,9 +91,18 @@ def _validate_env_var_name(var_name: str) -> None:
     Raises:
         SecurityError: If the environment variable is not in the allowlist
     """
+    # First validate the format of the environment variable name
+    if not validate_environment_variable_name(var_name):
+        raise SecurityError(
+            f"Invalid environment variable name format: '{sanitize_log_input(var_name)}'. "
+            "Environment variable names must contain only letters, digits, and underscores, "
+            "and cannot start with a digit."
+        )
+    
+    # Then check against allowlist
     if var_name not in ALLOWED_ENV_VARS:
         raise SecurityError(
-            f"Unauthorized environment variable '{var_name}' is not in allowlist. "
+            f"Unauthorized environment variable '{sanitize_log_input(var_name)}' is not in allowlist. "
             f"Allowed variables: {sorted(ALLOWED_ENV_VARS)}"
         )
 
@@ -187,12 +203,19 @@ class ConfigLoader:
         Raises:
             EnvironmentVariableError: If required environment variable is missing
         """
+        missing_vars = []
+        security_errors = []
+        
         def replace_env_var(match: re.Match[str]) -> str:
             var_name = match.group(1)
             default_value = match.group(2)
             
             # Security: Validate environment variable name against allowlist
-            _validate_env_var_name(var_name)
+            try:
+                _validate_env_var_name(var_name)
+            except SecurityError as e:
+                security_errors.append(str(e))
+                return match.group(0)  # Return original placeholder
             
             # Get environment variable value
             env_value = os.getenv(var_name)
@@ -204,16 +227,34 @@ class ConfigLoader:
                 # Security: Sanitize default value as well
                 return _sanitize_env_value(default_value)
             elif self.require_env_vars:
-                raise EnvironmentVariableError(
-                    f"Required environment variable '{var_name}' is not set"
-                )
+                missing_vars.append(var_name)
+                return match.group(0)  # Return original placeholder for now
             else:
                 # Return original placeholder if not requiring env vars
                 return match.group(0)
         
         try:
-            return self.ENV_VAR_PATTERN.sub(replace_env_var, content)
-        except EnvironmentVariableError:
+            result = self.ENV_VAR_PATTERN.sub(replace_env_var, content)
+            
+            # Check for any security errors first
+            if security_errors:
+                raise SecurityError(f"Security validation failed: {'; '.join(security_errors)}")
+            
+            # Check for missing variables
+            if missing_vars:
+                if len(missing_vars) == 1:
+                    raise EnvironmentVariableError(
+                        f"Required environment variable '{missing_vars[0]}' is not set"
+                    )
+                else:
+                    sorted_vars = sorted(missing_vars)
+                    raise EnvironmentVariableError(
+                        f"Required environment variables are not set: {', '.join(sorted_vars)}"
+                    )
+            
+            return result
+            
+        except (EnvironmentVariableError, SecurityError):
             raise
         except Exception as e:
             raise EnvironmentVariableError(f"Failed to substitute environment variables: {e}") from e

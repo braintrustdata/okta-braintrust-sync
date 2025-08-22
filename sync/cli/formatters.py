@@ -9,6 +9,7 @@ from rich.text import Text
 from sync.core.planner import SyncPlan, SyncPlanItem
 from sync.core.executor import ExecutionProgress
 from sync.security.validation import sanitize_log_input
+from sync.config.models import SyncConfig
 
 
 class SyncPlanFormatter:
@@ -55,8 +56,66 @@ class SyncPlanFormatter:
                 }[action]
                 
                 for item in items:
-                    name = sanitize_log_input(item.okta_resource.get("displayName", item.okta_resource.get("email", "Unknown")))
-                    self.console.print(f"  [{action_color}]{action_symbol} {item.resource_type}: {name}[/{action_color}]")
+                    # Extract name based on resource type and Okta data structure
+                    if item.okta_resource_type == "user":
+                        # For users, try profile.email, then profile.displayName, then profile.login
+                        profile = item.okta_resource.get("profile", {})
+                        name = profile.get("email") or profile.get("displayName") or profile.get("login") or "Unknown User"
+                    elif item.okta_resource_type == "group":
+                        # For groups, use profile.name
+                        profile = item.okta_resource.get("profile", {})
+                        name = profile.get("name") or item.okta_resource.get("name", "Unknown Group")
+                    elif item.okta_resource_type == "role":
+                        # For roles, use the role name
+                        name = item.okta_resource.get("name", "Unknown Role")
+                    elif item.okta_resource_type == "acl":
+                        # For ACLs, show group -> role -> project
+                        group_name = item.okta_resource.get("group_name", "Unknown")
+                        role_name = item.okta_resource.get("role_name", "Unknown")
+                        project_name = item.okta_resource.get("project_name", "Unknown")
+                        name = f"{group_name} → {role_name} → {project_name}"
+                    else:
+                        # Fallback for other resource types
+                        name = item.okta_resource.get("name") or item.okta_resource.get("displayName", "Unknown")
+                    
+                    name = sanitize_log_input(name)
+                    
+                    # Build the main line
+                    main_line = f"  [{action_color}]{action_symbol} {item.okta_resource_type}: {name}[/{action_color}]"
+                    self.console.print(main_line)
+                    
+                    # Add additional details if available
+                    if item.metadata:
+                        # For users, show which groups they'll be added to
+                        if item.okta_resource_type == "user" and "group_memberships" in item.metadata:
+                            groups = item.metadata["group_memberships"]
+                            if groups:
+                                group_list = [sanitize_log_input(g) for g in groups[:3]]  # Show first 3
+                                group_text = ", ".join(group_list)
+                                if len(groups) > 3:
+                                    group_text += f" + {len(groups) - 3} more"
+                                self.console.print(f"    [dim]→ Groups: {group_text}[/dim]")
+                        
+                        # For groups, show which roles they'll get
+                        elif item.okta_resource_type == "group" and "role_assignments" in item.metadata:
+                            roles = item.metadata["role_assignments"]
+                            if roles:
+                                role_list = [sanitize_log_input(r) for r in roles[:2]]  # Show first 2
+                                role_text = ", ".join(role_list)
+                                if len(roles) > 2:
+                                    role_text += f" + {len(roles) - 2} more"
+                                self.console.print(f"    [dim]→ Roles: {role_text}[/dim]")
+                        
+                        # For roles, show permission count and type
+                        elif item.okta_resource_type == "role":
+                            permission_count = item.metadata.get("permission_count", 0)
+                            role_type = item.metadata.get("role_type", "custom")
+                            self.console.print(f"    [dim]→ {permission_count} permissions ({role_type})[/dim]")
+                        
+                        # For ACLs, show additional context
+                        elif item.okta_resource_type == "acl":
+                            priority = item.metadata.get("priority", "N/A")
+                            self.console.print(f"    [dim]→ Priority: {priority}[/dim]")
             
             self.console.print()
         
@@ -88,12 +147,34 @@ class SyncPlanFormatter:
                 "skip": "[blue]=[/blue]"
             }.get(item.action, item.action)
             
-            name = sanitize_log_input(item.okta_resource.get("displayName", item.okta_resource.get("email", "Unknown")))
+            # Extract name based on resource type and Okta data structure
+            if item.okta_resource_type == "user":
+                # For users, try profile.email, then profile.displayName, then profile.login
+                profile = item.okta_resource.get("profile", {})
+                name = profile.get("email") or profile.get("displayName") or profile.get("login") or "Unknown User"
+            elif item.okta_resource_type == "group":
+                # For groups, use profile.name
+                profile = item.okta_resource.get("profile", {})
+                name = profile.get("name") or item.okta_resource.get("name", "Unknown Group")
+            elif item.okta_resource_type == "role":
+                # For roles, use the role name
+                name = item.okta_resource.get("name", "Unknown Role")
+            elif item.okta_resource_type == "acl":
+                # For ACLs, show group -> role -> project
+                group_name = item.okta_resource.get("group_name", "Unknown")
+                role_name = item.okta_resource.get("role_name", "Unknown")
+                project_name = item.okta_resource.get("project_name", "Unknown")
+                name = f"{group_name} → {role_name} → {project_name}"
+            else:
+                # Fallback for other resource types
+                name = item.okta_resource.get("name") or item.okta_resource.get("displayName", "Unknown")
+            
+            name = sanitize_log_input(name)
             details = self._get_item_details(item)
             
             table.add_row(
                 sanitize_log_input(item.braintrust_org),
-                item.resource_type,
+                item.okta_resource_type,
                 action_style,
                 name,
                 details
@@ -105,14 +186,44 @@ class SyncPlanFormatter:
         """Get formatted details for a sync plan item."""
         details = []
         
+        # Show reason if available
         if hasattr(item, 'reason') and item.reason:
             details.append(f"Reason: {sanitize_log_input(item.reason)}")
         
+        # Show changes for updates
         if item.action == "update" and hasattr(item, 'changes'):
             changes = getattr(item, 'changes', {})
             if changes:
                 change_list = [f"{k}: {sanitize_log_input(str(v))}" for k, v in changes.items()]
                 details.append(f"Changes: {', '.join(change_list)}")
+        
+        # Show metadata if available (group memberships, role assignments, etc.)
+        if item.metadata:
+            metadata_details = []
+            
+            # For users, show group memberships
+            if item.okta_resource_type == "user" and "group_memberships" in item.metadata:
+                groups = item.metadata["group_memberships"]
+                if groups:
+                    group_list = [sanitize_log_input(g) for g in groups]
+                    metadata_details.append(f"Groups: {', '.join(group_list)}")
+            
+            # For groups, show role assignments
+            if item.okta_resource_type == "group" and "role_assignments" in item.metadata:
+                roles = item.metadata["role_assignments"]
+                if roles:
+                    role_list = [sanitize_log_input(r) for r in roles]
+                    metadata_details.append(f"Roles: {', '.join(role_list)}")
+            
+            # Add any other metadata
+            for key, value in item.metadata.items():
+                if key not in ["group_memberships", "role_assignments"]:
+                    safe_key = sanitize_log_input(str(key))
+                    safe_value = sanitize_log_input(str(value))
+                    metadata_details.append(f"{safe_key}: {safe_value}")
+            
+            if metadata_details:
+                details.extend(metadata_details)
         
         return "; ".join(details) if details else "No additional details"
 

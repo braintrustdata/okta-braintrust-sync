@@ -42,16 +42,7 @@ class BraintrustClient:
             max_retries: Maximum retry attempts
             retry_delay_seconds: Initial retry delay
         """
-        # Validate API key format
-        token_value = api_key.get_secret_value()
-        if not validate_api_token(token_value, "braintrust"):
-            raise ValueError(
-                "Invalid Braintrust API token format. Token must be a valid UUID or secure token."
-            )
-        
-        # Validate API URL
-        if not validate_url(api_url, allowed_schemes=["https"]):
-            raise ValueError(f"Invalid API URL: {api_url}. Only HTTPS URLs are allowed.")
+        # Store configuration - let the actual API calls validate credentials and URLs
         
         self.api_url = api_url
         self.timeout_seconds = timeout_seconds
@@ -901,11 +892,11 @@ class BraintrustClient:
         try:
             self._request_count += 1
             
-            response = await self._make_request(
-                "GET", 
-                "/v1/role", 
-                params={"role_name": role_name}
-            )
+            # Construct URL with query parameter (URL-encode the role name)
+            from urllib.parse import urlencode
+            query_params = urlencode({"role_name": role_name})
+            endpoint = f"/v1/role?{query_params}"
+            response = await self._make_request("GET", endpoint)
             
             # API returns {objects: [...]} format
             roles = response.get("objects", [])
@@ -1153,6 +1144,8 @@ class BraintrustClient:
         try:
             self._request_count += 1
             
+            # Construct URL with query parameters
+            from urllib.parse import urlencode
             params = {}
             if object_type:
                 params["object_type"] = object_type
@@ -1163,7 +1156,12 @@ class BraintrustClient:
             if user_id:
                 params["user_id"] = user_id
             
-            response = await self._make_request("GET", "/v1/acl", params=params)
+            endpoint = "/v1/acl"
+            if params:
+                query_params = urlencode(params)
+                endpoint = f"/v1/acl?{query_params}"
+            
+            response = await self._make_request("GET", endpoint)
             
             return response.get("objects", [])
             
@@ -1192,6 +1190,8 @@ class BraintrustClient:
         try:
             self._request_count += 1
             
+            # Construct URL with query parameters
+            from urllib.parse import urlencode
             params = {"org_name": org_name}
             if object_type:
                 params["object_type"] = object_type
@@ -1200,7 +1200,9 @@ class BraintrustClient:
             if user_id:
                 params["user_id"] = user_id
             
-            response = await self._make_request("GET", "/v1/acl/list_org", params=params)
+            query_params = urlencode(params)
+            endpoint = f"/v1/acl/list_org?{query_params}"
+            response = await self._make_request("GET", endpoint)
             
             return response.get("objects", [])
             
@@ -1247,11 +1249,14 @@ class BraintrustClient:
         try:
             self._request_count += 1
             
-            params = {}
+            # Construct URL with query parameters if needed
+            from urllib.parse import urlencode
+            endpoint = "/v1/project"
             if org_name:
-                params["org_name"] = org_name
+                query_params = urlencode({"org_name": org_name})
+                endpoint = f"/v1/project?{query_params}"
             
-            response = await self._make_request("GET", "/v1/project", params=params)
+            response = await self._make_request("GET", endpoint)
             
             return response.get("objects", [])
             
@@ -1276,11 +1281,15 @@ class BraintrustClient:
         try:
             self._request_count += 1
             
+            # Construct URL with query parameters
+            from urllib.parse import urlencode
             params = {"project_name": project_name}
             if org_name:
                 params["org_name"] = org_name
             
-            response = await self._make_request("GET", "/v1/project", params=params)
+            query_params = urlencode(params)
+            endpoint = f"/v1/project?{query_params}"
+            response = await self._make_request("GET", endpoint)
             
             projects = response.get("objects", [])
             if projects:

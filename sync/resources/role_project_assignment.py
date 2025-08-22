@@ -419,6 +419,13 @@ class RoleProjectAssignmentManager:
         # Get all projects in the organization
         all_projects = await client.list_projects(org_name=braintrust_org)
         
+        self._logger.debug(
+            "Retrieved projects for matching",
+            braintrust_org=braintrust_org,
+            total_projects=len(all_projects),
+            project_names=[p.get("name", "Unknown") for p in all_projects[:10]],  # First 10 for debugging
+        )
+        
         matching_projects = []
         
         # ========== Explicit project lists ==========
@@ -466,8 +473,26 @@ class RoleProjectAssignmentManager:
                     continue
                 
                 # Apply pattern matching
-                if self._project_matches_patterns(project_name, project_match):
+                matches = self._project_matches_patterns(project_name, project_match)
+                if matches:
                     matching_projects.append(project)
+                    self._logger.debug(
+                        "Project matched patterns",
+                        project_name=project_name,
+                        matched=True,
+                    )
+                else:
+                    self._logger.debug(
+                        "Project did not match patterns",
+                        project_name=project_name,
+                        patterns={
+                            "name_pattern": project_match.name_pattern,
+                            "name_contains": project_match.name_contains,
+                            "name_starts_with": project_match.name_starts_with,
+                            "name_ends_with": project_match.name_ends_with,
+                            "all_projects": project_match.all_projects,
+                        }
+                    )
         
         # ========== Apply exclusion patterns ==========
         if project_match.exclude_patterns:

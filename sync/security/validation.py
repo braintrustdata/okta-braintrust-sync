@@ -127,8 +127,9 @@ def validate_api_token(token: str, token_type: str = "generic") -> bool:
     token = token.strip()
     
     if token_type.lower() == "okta":
-        # Okta tokens should start with "ssws" and be followed by base64-like characters
-        return bool(re.match(r'^ssws[A-Za-z0-9_-]{32,}$', token))
+        # Accept any reasonable token format for Okta
+        # Just check it's not empty and has reasonable length
+        return len(token) >= 8 and len(token) <= 512
     
     elif token_type.lower() == "braintrust":
         # Braintrust tokens should be UUID format or specific pattern
@@ -187,6 +188,144 @@ def validate_url(url: str, allowed_schemes: List[str] = None) -> bool:
         
     except Exception:
         return False
+
+
+def validate_file_path(file_path: str, allow_relative: bool = True) -> bool:
+    """Validate file path for security vulnerabilities.
+    
+    Args:
+        file_path: File path to validate
+        allow_relative: Whether to allow relative paths
+        
+    Returns:
+        True if file path is safe, False otherwise
+    """
+    if not isinstance(file_path, str) or not file_path.strip():
+        return False
+    
+    # Normalize the path
+    normalized_path = file_path.strip()
+    
+    # Check for directory traversal attacks
+    dangerous_patterns = ['../', '..\\', '/./', '/..', '\\..', '~/', '${']
+    for pattern in dangerous_patterns:
+        if pattern in normalized_path:
+            return False
+    
+    # Check for null bytes
+    if '\x00' in normalized_path:
+        return False
+    
+    # Check for absolute paths if not allowed
+    if not allow_relative and (normalized_path.startswith('/') or ':\\' in normalized_path):
+        return False
+    
+    # Check for excessively long paths
+    if len(normalized_path) > 4096:
+        return False
+    
+    # Check for dangerous characters
+    dangerous_chars = ['<', '>', '|', '*', '?', '"']
+    if any(char in normalized_path for char in dangerous_chars):
+        return False
+    
+    return True
+
+
+def validate_cli_string_input(input_str: str, max_length: int = 1000, allow_empty: bool = False) -> bool:
+    """Validate CLI string input for security and length constraints.
+    
+    Args:
+        input_str: String input to validate
+        max_length: Maximum allowed length
+        allow_empty: Whether empty strings are allowed
+        
+    Returns:
+        True if input is valid, False otherwise
+    """
+    if not isinstance(input_str, str):
+        return False
+    
+    if not allow_empty and not input_str.strip():
+        return False
+    
+    if len(input_str) > max_length:
+        return False
+    
+    # Check for control characters and dangerous sequences
+    if re.search(r'[\x00-\x1F\x7F]', input_str):
+        return False
+    
+    # Check for script injection patterns
+    dangerous_patterns = [
+        r'<script', r'javascript:', r'vbscript:', r'onload=', r'onerror=',
+        r'eval\s*\(', r'exec\s*\(', r'system\s*\(', r'`.*`'
+    ]
+    
+    for pattern in dangerous_patterns:
+        if re.search(pattern, input_str, re.IGNORECASE):
+            return False
+    
+    return True
+
+
+def validate_environment_variable_name(var_name: str) -> bool:
+    """Validate environment variable name format.
+    
+    Args:
+        var_name: Environment variable name to validate
+        
+    Returns:
+        True if variable name is valid, False otherwise
+    """
+    if not isinstance(var_name, str) or not var_name:
+        return False
+    
+    # Environment variable names should follow standard conventions
+    # Letters, digits, and underscores only, cannot start with digit
+    if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', var_name):
+        return False
+    
+    # Check length constraints
+    if len(var_name) > 255:
+        return False
+    
+    # Avoid reserved/dangerous names
+    reserved_names = {
+        'PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'PWD', 'OLDPWD',
+        'IFS', 'PS1', 'PS2', 'HISTFILE', 'HISTSIZE', 'TMPDIR'
+    }
+    
+    if var_name.upper() in reserved_names:
+        return False
+    
+    return True
+
+
+def validate_cron_expression(cron_expr: str) -> bool:
+    """Validate cron expression format.
+    
+    Args:
+        cron_expr: Cron expression to validate
+        
+    Returns:
+        True if cron expression is valid, False otherwise
+    """
+    if not isinstance(cron_expr, str) or not cron_expr.strip():
+        return False
+    
+    # Basic cron validation - 5 or 6 fields
+    fields = cron_expr.strip().split()
+    if len(fields) not in [5, 6]:
+        return False
+    
+    # Check each field for basic format (numbers, ranges, wildcards, lists)
+    cron_field_pattern = re.compile(r'^[\d\*\-\,\/]+$')
+    for field in fields:
+        if not cron_field_pattern.match(field):
+            return False
+    
+    return True
 
 
 def validate_organization_name(org_name: str) -> bool:

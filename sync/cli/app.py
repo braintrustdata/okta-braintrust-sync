@@ -12,7 +12,9 @@ from sync.config.loader import ConfigLoader, find_config_file
 from sync.config.models import SyncConfig
 from sync.cli.formatters import SyncPlanFormatter, ProgressFormatter, StateFormatter, ConfigFormatter
 from sync.cli.factory import ClientFactory, ComponentFactory
-from sync.security.validation import sanitize_log_input
+from sync.security.validation import (
+    sanitize_log_input, validate_file_path, validate_cli_string_input
+)
 
 import structlog
 
@@ -49,9 +51,15 @@ def load_configuration(config_file: Optional[Path] = None) -> SyncConfig:
                 console.print("Please create a config.yaml file or specify --config")
                 raise typer.Exit(1)
         
+        # Validate config file path for security
+        config_path_str = str(config_file)
+        if not validate_file_path(config_path_str):
+            console.print(f"[red]Error: Invalid or unsafe configuration file path: {sanitize_log_input(config_path_str)}[/red]")
+            raise typer.Exit(1)
+        
         # Load configuration
         loader = ConfigLoader()
-        config = loader.load_from_file(config_file)
+        config = loader.load_config(config_file)
         
         console.print(f"[green]✓[/green] Loaded configuration from {config_file}")
         return config
@@ -95,6 +103,17 @@ def plan(
     """Show what would be synchronized without making changes."""
     
     async def run_plan():
+        # Validate format style parameter
+        if not validate_cli_string_input(format_style, max_length=50):
+            console.print(f"[red]Error: Invalid format style: {sanitize_log_input(format_style)}[/red]")
+            raise typer.Exit(1)
+        
+        # Only allow known format styles
+        allowed_formats = {"terraform", "table"}
+        if format_style not in allowed_formats:
+            console.print(f"[red]Error: Unknown format style '{sanitize_log_input(format_style)}'. Allowed: {', '.join(allowed_formats)}[/red]")
+            raise typer.Exit(1)
+        
         config = load_configuration(config_file)
         
         with Progress(
@@ -129,7 +148,7 @@ def plan(
             
             # Generate plan
             progress.add_task("Generating sync plan...", total=None)
-            sync_plan = await planner.create_sync_plan()
+            sync_plan = await planner.generate_sync_plan()
         
         # Display plan
         formatter = SyncPlanFormatter(console)
@@ -192,7 +211,7 @@ def apply(
             
             # Generate plan
             progress.add_task("Generating sync plan...", total=None)
-            sync_plan = await planner.create_sync_plan()
+            sync_plan = await planner.generate_sync_plan()
         
         # Show plan
         formatter = SyncPlanFormatter(console)

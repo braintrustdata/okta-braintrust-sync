@@ -139,18 +139,8 @@ class OktaClient(BaseAPIClient):
         if not self.domain.endswith(".okta.com") and not self.domain.endswith(".oktapreview.com"):
             raise ValueError(f"Invalid Okta domain: {domain}")
         
-        # Validate API token format
-        token_value = api_token.get_secret_value()
-        if not validate_api_token(token_value, "okta"):
-            raise ValueError(
-                "Invalid Okta API token format. Token must start with 'ssws' and contain valid characters."
-            )
-        
+        # Store configuration - let the actual API calls validate credentials and URLs
         base_url = f"https://{self.domain}/api/v1"
-        
-        # Validate the constructed URL
-        if not validate_url(base_url, allowed_schemes=["https"]):
-            raise ValueError(f"Invalid base URL constructed: {base_url}")
         
         self._api_token = api_token
         

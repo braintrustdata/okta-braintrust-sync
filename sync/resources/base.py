@@ -10,13 +10,35 @@ from pydantic import BaseModel, Field
 
 from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient, OktaUser, OktaGroup
-from sync.core.enhanced_state import StateManager, SyncOperation, SyncState
+from sync.core.enhanced_state import StateManager
 
 logger = structlog.get_logger(__name__)
 
 # Type variables for generic resource handling
 OktaResourceType = TypeVar('OktaResourceType', OktaUser, OktaGroup)
 BraintrustResourceType = TypeVar('BraintrustResourceType')
+
+
+class SyncOperation(BaseModel):
+    """Represents a sync operation for tracking."""
+    operation_id: str
+    operation_type: str
+    resource_type: str
+    okta_id: Optional[str] = None
+    braintrust_id: Optional[str] = None
+    braintrust_org: str
+    status: str = "pending"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    
+    def mark_completed(self):
+        """Mark operation as completed."""
+        self.status = "completed"
+    
+    def mark_failed(self, error: str):
+        """Mark operation as failed."""
+        self.status = "failed"
+        self.error_message = error
 
 
 class SyncAction(str, Enum):
@@ -33,6 +55,7 @@ class SyncPlanItem(BaseModel):
     
     okta_resource_id: str
     okta_resource_type: str  # "user" or "group"
+    okta_resource: Dict[str, Any] = Field(default_factory=dict)  # Full Okta resource data
     braintrust_org: str
     action: SyncAction
     reason: str
@@ -349,11 +372,10 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
         plan_items = []
         
         try:
-            # Get current state
+            # Get current state - create empty state if none exists (first run)
             current_state = self.state_manager.get_current_state()
             if current_state is None:
-                self._logger.warning("No current sync state available")
-                return plan_items
+                self._logger.warning("No current sync state available - continuing with empty state for first run")
             
             # Get existing Braintrust resources for comparison
             braintrust_resources = await self.get_braintrust_resources(braintrust_org)
@@ -369,9 +391,11 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                 okta_id = self.get_resource_identifier(okta_resource)
                 
                 # Check if resource already exists in Braintrust
-                existing_mapping = current_state.get_mapping(
-                    okta_id, braintrust_org, self.resource_type
-                )
+                existing_mapping = None
+                if current_state:
+                    existing_mapping = current_state.get_mapping(
+                        okta_id, braintrust_org, self.resource_type
+                    )
                 
                 if existing_mapping:
                     # Resource exists - check if update is needed
@@ -394,6 +418,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                             plan_items.append(SyncPlanItem(
                                 okta_resource_id=okta_id,
                                 okta_resource_type=self.resource_type,
+                                okta_resource=getattr(okta_resource, 'data', {}),
                                 braintrust_org=braintrust_org,
                                 action=SyncAction.UPDATE,
                                 reason=f"Updates needed: {', '.join(updates.keys())}",
@@ -404,6 +429,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                             plan_items.append(SyncPlanItem(
                                 okta_resource_id=okta_id,
                                 okta_resource_type=self.resource_type,
+                                okta_resource=getattr(okta_resource, 'data', {}),
                                 braintrust_org=braintrust_org,
                                 action=SyncAction.SKIP,
                                 reason="Resource is up to date",
@@ -414,6 +440,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                         plan_items.append(SyncPlanItem(
                             okta_resource_id=okta_id,
                             okta_resource_type=self.resource_type,
+                            okta_resource=getattr(okta_resource, 'data', {}),
                             braintrust_org=braintrust_org,
                             action=SyncAction.CREATE,
                             reason="Mapped resource missing in Braintrust",
@@ -424,6 +451,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                         plan_items.append(SyncPlanItem(
                             okta_resource_id=okta_id,
                             okta_resource_type=self.resource_type,
+                            okta_resource=getattr(okta_resource, 'data', {}),
                             braintrust_org=braintrust_org,
                             action=SyncAction.CREATE,
                             reason="New resource from Okta",
@@ -432,6 +460,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                         plan_items.append(SyncPlanItem(
                             okta_resource_id=okta_id,
                             okta_resource_type=self.resource_type,
+                            okta_resource=getattr(okta_resource, 'data', {}),
                             braintrust_org=braintrust_org,
                             action=SyncAction.SKIP,
                             reason="Creation disabled in sync rules",
@@ -502,6 +531,7 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
                     plan_items.append(SyncPlanItem(
                         okta_resource_id=okta_identifier,
                         okta_resource_type=self.resource_type,
+                        okta_resource={},  # No Okta resource for deletion
                         braintrust_org=braintrust_org,
                         action=SyncAction.DELETE,
                         reason=f"Resource exists in Braintrust but not in Okta (managed by sync tool)",
@@ -678,10 +708,10 @@ class BaseResourceSyncer(ABC, Generic[OktaResourceType, BraintrustResourceType])
             metadata=plan_item.metadata,
         )
         
-        # Add to state
-        current_state = self.state_manager.get_current_state()
-        if current_state:
-            current_state.add_operation(operation)
+        # Add to state (commented out - add_operation method not yet implemented)
+        # current_state = self.state_manager.get_current_state()
+        # if current_state:
+        #     current_state.add_operation(operation)
         
         try:
             if plan_item.action == SyncAction.SKIP:

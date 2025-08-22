@@ -376,13 +376,15 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             True if user should be synced
         """
         try:
-            # Check if user is active
+            # Check if user is active - include both ACTIVE and PROVISIONED users
             if sync_rules.get("only_active_users", True):
                 user_status = (
                     okta_resource.get("status") if isinstance(okta_resource, dict)
                     else okta_resource.status
                 )
-                if user_status != "ACTIVE":
+                # Accept both ACTIVE (fully activated) and PROVISIONED (created but not yet activated) users
+                valid_statuses = {"ACTIVE", "PROVISIONED"}
+                if user_status not in valid_statuses:
                     user_id = (
                         okta_resource.get("id") if isinstance(okta_resource, dict)
                         else okta_resource.id

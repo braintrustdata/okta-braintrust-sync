@@ -217,13 +217,10 @@ class ComponentFactory:
         """
         from sync.audit.logger import AuditLogger
         
+        # Only pass parameters that AuditLogger actually accepts
         return AuditLogger(
-            enabled=config.audit.enabled,
-            log_level=config.audit.log_level,
-            log_format=config.audit.log_format,
-            log_file=config.audit.log_file,
             retention_days=config.audit.retention_days,
-            include_sensitive_data=config.audit.include_sensitive_data,
+            structured_logging=(config.audit.log_format.lower() == "json"),
         )
     
     @staticmethod
@@ -247,10 +244,10 @@ class ComponentFactory:
         from sync.core.planner import SyncPlanner
         
         return SyncPlanner(
+            config=config,
             okta_client=okta_client,
             braintrust_clients=braintrust_clients,
             state_manager=state_manager,
-            sync_config=config,
         )
     
     @staticmethod
