@@ -96,23 +96,10 @@ def plan(
     config_file: Optional[Path] = typer.Option(
         None, "--config", "-c", help="Path to configuration file"
     ),
-    format_style: str = typer.Option(
-        "terraform", "--format", help="Output format: terraform, table"
-    ),
 ) -> None:
     """Show what would be synchronized without making changes."""
     
     async def run_plan():
-        # Validate format style parameter
-        if not validate_cli_string_input(format_style, max_length=50):
-            console.print(f"[red]Error: Invalid format style: {sanitize_log_input(format_style)}[/red]")
-            raise typer.Exit(1)
-        
-        # Only allow known format styles
-        allowed_formats = {"terraform", "table"}
-        if format_style not in allowed_formats:
-            console.print(f"[red]Error: Unknown format style '{sanitize_log_input(format_style)}'. Allowed: {', '.join(allowed_formats)}[/red]")
-            raise typer.Exit(1)
         
         config = load_configuration(config_file)
         
@@ -150,15 +137,17 @@ def plan(
             progress.add_task("Generating sync plan...", total=None)
             sync_plan = await planner.generate_sync_plan()
         
-        # Display plan
+        # Display plan in multiple formats for best review experience
         formatter = SyncPlanFormatter(console)
-        if format_style == "terraform":
-            formatter.format_terraform_style(sync_plan)
-        elif format_style == "table":
-            formatter.format_detailed_table(sync_plan)
-        else:
-            console.print(f"[red]Unknown format: {format_style}[/red]")
-            raise typer.Exit(1)
+        
+        # Show high-level resource summary first
+        formatter.format_resource_summary(sync_plan)
+        
+        # Show operations summary by organization and type
+        formatter.format_summary_matrix(sync_plan)
+        
+        # Show detailed ACL assignments in matrix format
+        formatter.format_acl_matrix(sync_plan)
     
     try:
         asyncio.run(run_plan())
@@ -213,9 +202,17 @@ def apply(
             progress.add_task("Generating sync plan...", total=None)
             sync_plan = await planner.generate_sync_plan()
         
-        # Show plan
+        # Show plan using the same improved format as the plan command
         formatter = SyncPlanFormatter(console)
-        formatter.format_terraform_style(sync_plan)
+        
+        # Show high-level resource summary first
+        formatter.format_resource_summary(sync_plan)
+        
+        # Show operations summary by organization and type
+        formatter.format_summary_matrix(sync_plan)
+        
+        # Show detailed ACL assignments in matrix format
+        formatter.format_acl_matrix(sync_plan)
         
         if sync_plan.total_items == 0:
             console.print("[green]No changes needed[/green]")

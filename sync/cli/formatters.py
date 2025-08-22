@@ -127,6 +127,195 @@ class SyncPlanFormatter:
         summary_text = f"Plan: {create_count} to create, {update_count} to update, {skip_count} to skip"
         self.console.print(Panel(summary_text, title="Summary", border_style="blue"))
     
+    def format_summary_matrix(self, plan: SyncPlan) -> None:
+        """Display sync plan as summary tables organized by resource type."""
+        self.console.print()
+        self.console.print("[bold blue]Sync Plan Summary[/bold blue]")
+        self.console.print()
+        
+        if plan.total_items == 0:
+            self.console.print("[yellow]No changes to apply[/yellow]")
+            return
+        
+        # Group items by organization and resource type
+        by_org_and_type = {}
+        for item in plan.get_all_items():
+            org = sanitize_log_input(item.braintrust_org)
+            resource_type = item.okta_resource_type
+            
+            if org not in by_org_and_type:
+                by_org_and_type[org] = {}
+            if resource_type not in by_org_and_type[org]:
+                by_org_and_type[org][resource_type] = {"create": 0, "update": 0, "skip": 0}
+            
+            by_org_and_type[org][resource_type][item.action] += 1
+        
+        # Display summary table for each organization
+        for org_name, types in by_org_and_type.items():
+            table = Table(title=f"Operations for {org_name}")
+            table.add_column("Resource Type", style="cyan")
+            table.add_column("Create", style="green")
+            table.add_column("Update", style="yellow")
+            table.add_column("Skip", style="blue")
+            table.add_column("Total", style="bold")
+            
+            for resource_type, counts in types.items():
+                total = counts["create"] + counts["update"] + counts["skip"]
+                table.add_row(
+                    resource_type.title(),
+                    str(counts["create"]) if counts["create"] > 0 else "-",
+                    str(counts["update"]) if counts["update"] > 0 else "-",
+                    str(counts["skip"]) if counts["skip"] > 0 else "-",
+                    str(total)
+                )
+            
+            self.console.print(table)
+            self.console.print()
+    
+    def format_acl_matrix(self, plan: SyncPlan) -> None:
+        """Display ACL assignments in a structured matrix format."""
+        acl_items = [item for item in plan.get_all_items() if item.okta_resource_type == "acl"]
+        
+        if not acl_items:
+            self.console.print("[yellow]No ACL assignments in plan[/yellow]")
+            return
+        
+        self.console.print()
+        self.console.print("[bold blue]Access Control Assignments[/bold blue]")
+        self.console.print()
+        
+        # Group ACLs by organization
+        by_org = {}
+        for item in acl_items:
+            org = sanitize_log_input(item.braintrust_org)
+            if org not in by_org:
+                by_org[org] = []
+            by_org[org].append(item)
+        
+        for org_name, items in by_org.items():
+            # Group by role for cleaner display
+            by_role = {}
+            for item in items:
+                role_name = sanitize_log_input(item.okta_resource.get("role_name", "Unknown"))
+                if role_name not in by_role:
+                    by_role[role_name] = []
+                by_role[role_name].append(item)
+            
+            table = Table(title=f"ACL Assignments - {org_name}")
+            table.add_column("Role", style="magenta")
+            table.add_column("Group", style="cyan")
+            table.add_column("Project", style="green")
+            table.add_column("Action", style="bold")
+            table.add_column("Priority", style="dim")
+            
+            for role_name, role_items in by_role.items():
+                for i, item in enumerate(role_items):
+                    group_name = sanitize_log_input(item.okta_resource.get("group_name", "Unknown"))
+                    project_name = sanitize_log_input(item.okta_resource.get("project_name", "Unknown"))
+                    priority = item.metadata.get("priority", "N/A") if item.metadata else "N/A"
+                    
+                    action_style = {
+                        "create": "[green]+[/green]",
+                        "update": "[yellow]~[/yellow]",
+                        "skip": "[blue]=[/blue]"
+                    }.get(item.action, item.action)
+                    
+                    # Only show role name on first row of each role group
+                    role_display = role_name if i == 0 else ""
+                    
+                    table.add_row(
+                        role_display,
+                        group_name,
+                        project_name,
+                        action_style,
+                        str(priority)
+                    )
+                
+                # Add separator line between roles if there are multiple
+                if len(by_role) > 1 and role_name != list(by_role.keys())[-1]:
+                    table.add_row("", "", "", "", "")
+            
+            self.console.print(table)
+            self.console.print()
+    
+    def format_resource_summary(self, plan: SyncPlan) -> None:
+        """Display a high-level summary of what resources will be affected."""
+        self.console.print()
+        self.console.print("[bold blue]Resource Summary[/bold blue]")
+        self.console.print()
+        
+        if plan.total_items == 0:
+            self.console.print("[yellow]No changes to apply[/yellow]")
+            return
+        
+        # Collect unique resource names by type
+        resources_by_type = {}
+        
+        for item in plan.get_all_items():
+            resource_type = item.okta_resource_type
+            
+            # Extract resource name
+            if resource_type == "user":
+                profile = item.okta_resource.get("profile", {})
+                name = profile.get("email") or profile.get("displayName") or profile.get("login") or "Unknown User"
+            elif resource_type == "group":
+                profile = item.okta_resource.get("profile", {})
+                name = profile.get("name") or item.okta_resource.get("name", "Unknown Group")
+            elif resource_type == "role":
+                name = item.okta_resource.get("name", "Unknown Role")
+            elif resource_type == "acl":
+                # For ACLs, track the project being accessed
+                name = item.okta_resource.get("project_name", "Unknown Project")
+            else:
+                name = item.okta_resource.get("name", "Unknown")
+            
+            name = sanitize_log_input(name)
+            
+            if resource_type not in resources_by_type:
+                resources_by_type[resource_type] = set()
+            resources_by_type[resource_type].add(name)
+        
+        # Display summary table
+        table = Table(title="Affected Resources")
+        table.add_column("Type", style="cyan")
+        table.add_column("Count", style="green")
+        table.add_column("Examples", style="dim")
+        
+        for resource_type, names in resources_by_type.items():
+            name_list = sorted(list(names))
+            count = len(name_list)
+            
+            # Show first 3 examples
+            examples = name_list[:3]
+            if count > 3:
+                examples.append(f"... +{count - 3} more")
+            
+            examples_text = ", ".join(examples)
+            
+            table.add_row(
+                resource_type.title(),
+                str(count),
+                examples_text
+            )
+        
+        self.console.print(table)
+        
+        # Show organization distribution
+        org_counts = {}
+        for item in plan.get_all_items():
+            org = sanitize_log_input(item.braintrust_org)
+            org_counts[org] = org_counts.get(org, 0) + 1
+        
+        self.console.print()
+        org_table = Table(title="Operations by Organization")
+        org_table.add_column("Organization", style="cyan")
+        org_table.add_column("Operations", style="green")
+        
+        for org, count in org_counts.items():
+            org_table.add_row(org, str(count))
+        
+        self.console.print(org_table)
+    
     def format_detailed_table(self, plan: SyncPlan) -> None:
         """Display sync plan as detailed table."""
         if plan.total_items == 0:
