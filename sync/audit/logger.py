@@ -9,8 +9,7 @@ from typing import Any, Dict, List, Optional, Union
 import structlog
 from pydantic import BaseModel, Field
 
-from sync.core.state import SyncOperation
-from sync.resources.base import SyncResult, SyncPlanItem
+from sync.resources.base import SyncOperation, SyncResult, SyncPlanItem
 
 
 class AuditEvent(BaseModel):

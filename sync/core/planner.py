@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient
 from sync.config.models import SyncConfig
-from sync.core.state import StateManager
+from sync.core.enhanced_state import StateManager
 from sync.resources.base import SyncPlanItem, SyncAction
 from sync.resources.users import UserSyncer
 from sync.resources.groups import GroupSyncer
@@ -27,6 +27,8 @@ class SyncPlan(BaseModel):
     # Plan items organized by resource type and dependency order
     user_items: List[SyncPlanItem] = Field(default_factory=list)
     group_items: List[SyncPlanItem] = Field(default_factory=list)
+    role_items: List[SyncPlanItem] = Field(default_factory=list)
+    acl_items: List[SyncPlanItem] = Field(default_factory=list)
     
     # Summary statistics
     total_items: int = 0
@@ -47,17 +49,21 @@ class SyncPlan(BaseModel):
         
         Args:
             items: List of sync plan items to add
-            resource_type: Type of resource ("user" or "group")
+            resource_type: Type of resource ("user", "group", "role", "acl")
         """
         if resource_type == "user":
             self.user_items.extend(items)
         elif resource_type == "group":
             self.group_items.extend(items)
+        elif resource_type == "role":
+            self.role_items.extend(items)
+        elif resource_type == "acl":
+            self.acl_items.extend(items)
         else:
             raise ValueError(f"Unknown resource type: {resource_type}")
         
         # Update statistics
-        self.total_items = len(self.user_items) + len(self.group_items)
+        self.total_items = len(self.user_items) + len(self.group_items) + len(self.role_items) + len(self.acl_items)
         
         for item in items:
             action = item.action.value if hasattr(item.action, 'value') else str(item.action)
@@ -68,9 +74,13 @@ class SyncPlan(BaseModel):
         """Get all sync plan items in dependency order.
         
         Returns:
-            List of all sync plan items, users first (groups depend on users)
+            List of all sync plan items, ordered by dependencies:
+            1. Users (foundational)
+            2. Groups (depend on users for memberships)
+            3. Roles (independent but needed for ACLs)
+            4. ACLs (depend on groups and roles)
         """
-        return self.user_items + self.group_items
+        return self.user_items + self.group_items + self.role_items + self.acl_items
     
     def get_items_by_org(self, org_name: str) -> List[SyncPlanItem]:
         """Get all sync plan items for a specific organization.
@@ -136,12 +146,26 @@ class SyncPlanner:
             # For now, use defaults. In the future, these could be part of UserSyncConfig
             pass
             
+        # Extract group assignment configuration if available
+        group_assignment_config = {}
+        if config.group_assignment and hasattr(config.group_assignment, 'get_config_for_org'):
+            # Create a dict mapping org names to their group assignment configs
+            for org_name in braintrust_clients.keys():
+                org_config = config.group_assignment.get_config_for_org(org_name)
+                if org_config:
+                    group_assignment_config[org_name] = org_config
+        elif config.group_assignment and hasattr(config.group_assignment, 'global_config'):
+            # Use global config for all orgs
+            for org_name in braintrust_clients.keys():
+                group_assignment_config[org_name] = config.group_assignment.global_config
+
         self.user_syncer = UserSyncer(
             okta_client=okta_client,
             braintrust_clients=braintrust_clients,
             state_manager=state_manager,
             identity_mapping_strategy=identity_strategy,
             custom_field_mappings=custom_mappings,
+            group_assignment_config=group_assignment_config,
         )
         
         # Use default group sync settings since they're not in the current config model
@@ -166,6 +190,74 @@ class SyncPlanner:
         self._logger = logger.bind(
             planner_type="SyncPlanner",
             target_orgs=list(braintrust_clients.keys()),
+        )
+    
+    async def _initialize_all_caches(
+        self,
+        target_organizations: List[str],
+    ) -> None:
+        """Initialize all caches during planning phase for optimal performance.
+        
+        This method pre-populates all API caches to eliminate redundant network calls
+        during both planning and execution phases.
+        
+        Args:
+            target_organizations: List of Braintrust organizations to cache data for
+        """
+        self._logger.info(
+            "Initializing comprehensive API caches",
+            target_orgs=target_organizations,
+        )
+        
+        # ========== Cache Okta Resources ==========
+        # Cache users and groups from Okta (these are shared across all orgs)
+        try:
+            self._logger.info("Caching Okta users and groups")
+            # Populate internal caches in the Okta client
+            await self.okta_client._ensure_users_cache()
+            await self.okta_client._ensure_groups_cache()
+            self._logger.info("Okta caching completed")
+        except Exception as e:
+            self._logger.warning(
+                "Failed to cache Okta resources",
+                error=str(e),
+            )
+        
+        # ========== Cache Braintrust Resources Per Organization ==========
+        for org_name in target_organizations:
+            if org_name not in self.braintrust_clients:
+                continue
+                
+            client = self.braintrust_clients[org_name]
+            
+            try:
+                self._logger.info(
+                    "Caching Braintrust resources",
+                    org_name=org_name,
+                )
+                
+                # Cache all Braintrust resources for this organization
+                # These populate the client's internal caches
+                await client._ensure_groups_cache()
+                await client._ensure_roles_cache()
+                # Cache projects directly since there's no groups/roles-style cache for projects yet
+                await client.list_projects(org_name=org_name)
+                
+                self._logger.info(
+                    "Braintrust caching completed", 
+                    org_name=org_name,
+                )
+                
+            except Exception as e:
+                self._logger.warning(
+                    "Failed to cache Braintrust resources",
+                    org_name=org_name,
+                    error=str(e),
+                )
+        
+        self._logger.info(
+            "Cache initialization completed",
+            cached_orgs=len(target_organizations),
         )
     
     async def generate_sync_plan(
@@ -193,15 +285,20 @@ class SyncPlanner:
             target_organizations = list(self.braintrust_clients.keys())
         
         if resource_types is None:
-            resource_types = ["user", "group"]
+            resource_types = ["user", "group", "role", "acl"]
         
         if okta_filters is None:
-            okta_filters = {}
+            # Extract filters from configuration if not provided
+            okta_filters = self._extract_okta_filters_from_config()
         
         # Validate organizations
         for org in target_organizations:
             if org not in self.braintrust_clients:
                 raise ValueError(f"No Braintrust client configured for org: {org}")
+        
+        # ========== Initialize All Caches During Planning ==========
+        # This eliminates redundant API calls during both planning and execution
+        await self._initialize_all_caches(target_organizations)
         
         self._logger.info(
             "Generating sync plan",
@@ -242,6 +339,26 @@ class SyncPlanner:
                 self._logger.debug(
                     "Generated group sync plan",
                     group_items=len(group_items),
+                )
+            
+            # Generate role sync plan
+            if "role" in resource_types:
+                role_items = await self._generate_role_plan(target_organizations)
+                plan.add_items(role_items, "role")
+                
+                self._logger.debug(
+                    "Generated role sync plan",
+                    role_items=len(role_items),
+                )
+            
+            # Generate ACL sync plan (depends on groups and roles)
+            if "acl" in resource_types:
+                acl_items = await self._generate_acl_plan(target_organizations, plan)
+                plan.add_items(acl_items, "acl")
+                
+                self._logger.debug(
+                    "Generated ACL sync plan", 
+                    acl_items=len(acl_items),
                 )
             
             # Resolve dependencies
@@ -383,6 +500,430 @@ class SyncPlanner:
             plan.warnings.append(f"Failed to resolve dependencies: {e}")
             return plan
     
+    async def _generate_role_plan(
+        self,
+        target_organizations: List[str],
+    ) -> List[SyncPlanItem]:
+        """Generate sync plan for roles based on role-project configuration.
+        
+        Args:
+            target_organizations: List of Braintrust organizations
+            
+        Returns:
+            List of role sync plan items
+        """
+        from sync.resources.role_project_assignment import RoleProjectAssignmentManager
+        from sync.config.role_project_models import RoleProjectConfig
+        
+        role_items = []
+        
+        # Check if role-project assignment is configured
+        if not hasattr(self.config, 'role_project_assignment') or not self.config.role_project_assignment:
+            self._logger.debug("No role-project assignment configuration found")
+            return role_items
+        
+        # Extract role-project configs per organization
+        role_project_configs = {}
+        for org_name in target_organizations:
+            if hasattr(self.config.role_project_assignment, 'global_config'):
+                role_project_configs[org_name] = self.config.role_project_assignment.global_config
+        
+        # Create role assignment manager
+        role_manager = RoleProjectAssignmentManager(
+            braintrust_clients=self.braintrust_clients,
+            state_manager=self.state_manager,
+            role_project_configs=role_project_configs,
+        )
+        
+        # Generate role plan items for each organization
+        for org_name in target_organizations:
+            config = role_project_configs.get(org_name)
+            if not config or not config.standard_roles:
+                continue
+            
+            client = self.braintrust_clients[org_name]
+            
+            try:
+                # Check which roles need to be created or updated
+                for role_def in config.standard_roles:
+                    existing_role = await client.get_role_by_name(role_def.name)
+                    
+                    if existing_role:
+                        # Check if role needs update
+                        if config.update_existing_roles and role_manager._role_needs_update(existing_role, role_def):
+                            role_items.append(SyncPlanItem(
+                                okta_resource_id=f"role-{role_def.name}-{org_name}",
+                                okta_resource_type="role",
+                                okta_resource={
+                                    "name": role_def.name,
+                                    "description": role_def.description,
+                                    "permissions": [p.model_dump() for p in role_def.member_permissions],
+                                },
+                                braintrust_org=org_name,
+                                action=SyncAction.UPDATE,
+                                reason=f"Role '{role_def.name}' permissions need updating",
+                                existing_braintrust_id=existing_role.get("id"),
+                                metadata={
+                                    "permission_count": len(role_def.member_permissions),
+                                    "role_type": "standard",
+                                }
+                            ))
+                    else:
+                        # Role needs to be created
+                        if config.auto_create_roles:
+                            role_items.append(SyncPlanItem(
+                                okta_resource_id=f"role-{role_def.name}-{org_name}",
+                                okta_resource_type="role", 
+                                okta_resource={
+                                    "name": role_def.name,
+                                    "description": role_def.description,
+                                    "permissions": [p.model_dump() for p in role_def.member_permissions],
+                                },
+                                braintrust_org=org_name,
+                                action=SyncAction.CREATE,
+                                reason=f"Standard role '{role_def.name}' does not exist",
+                                metadata={
+                                    "permission_count": len(role_def.member_permissions),
+                                    "role_type": "standard",
+                                }
+                            ))
+                        
+            except Exception as e:
+                self._logger.warning(
+                    "Error planning roles for organization",
+                    org_name=org_name,
+                    error=str(e)
+                )
+        
+        self._logger.debug(
+            "Generated role plan",
+            items=len(role_items),
+            organizations=target_organizations,
+        )
+        
+        return role_items
+    
+    async def _generate_acl_plan(
+        self,
+        target_organizations: List[str],
+        current_plan: 'SyncPlan',
+    ) -> List[SyncPlanItem]:
+        """Generate sync plan for ACLs based on group-role-project assignments.
+        
+        Args:
+            target_organizations: List of Braintrust organizations
+            
+        Returns:
+            List of ACL sync plan items
+        """
+        from sync.resources.role_project_assignment import RoleProjectAssignmentManager
+        
+        acl_items = []
+        
+        # Check if role-project assignment is configured
+        if not hasattr(self.config, 'role_project_assignment') or not self.config.role_project_assignment:
+            self._logger.debug("No role-project assignment configuration found")
+            return acl_items
+        
+        # Extract role-project configs per organization
+        role_project_configs = {}
+        for org_name in target_organizations:
+            if hasattr(self.config.role_project_assignment, 'global_config'):
+                role_project_configs[org_name] = self.config.role_project_assignment.global_config
+        
+        # Create role assignment manager
+        role_manager = RoleProjectAssignmentManager(
+            braintrust_clients=self.braintrust_clients,
+            state_manager=self.state_manager,
+            role_project_configs=role_project_configs,
+        )
+        
+        # Generate ACL plan items for each organization
+        for org_name in target_organizations:
+            config = role_project_configs.get(org_name)
+            if not config or not config.group_assignments:
+                continue
+            
+            client = self.braintrust_clients[org_name]
+            
+            try:
+                # Projects are already cached by comprehensive cache initialization
+                all_projects = await client.list_projects(org_name=org_name)
+                
+                # Fetch existing ACLs for all projects to filter out duplicates during planning
+                existing_acl_keys = set()
+                total_existing_acls = 0
+                
+                for project in all_projects:
+                    project_id = project.get('id')
+                    if project_id:
+                        try:
+                            project_acls = await client.list_acls(
+                                object_type="project", 
+                                object_id=project_id
+                            )
+                            total_existing_acls += len(project_acls)
+                            
+                            for acl in project_acls:
+                                key = (
+                                    acl.get("object_id"),
+                                    acl.get("group_id"), 
+                                    acl.get("role_id")
+                                )
+                                existing_acl_keys.add(key)
+                        except Exception as e:
+                            self._logger.warning(
+                                "Failed to fetch ACLs for project during planning",
+                                project_id=project_id,
+                                project_name=project.get("name"),
+                                org_name=org_name,
+                                error=str(e),
+                            )
+                
+                self._logger.debug(
+                    "Found existing ACLs for planning",
+                    org_name=org_name,
+                    existing_count=total_existing_acls,
+                    projects_checked=len(all_projects),
+                )
+                
+                # Process each group assignment to generate ACL items
+                for assignment in config.group_assignments:
+                    if not assignment.enabled:
+                        continue
+                    
+                    # Find matching projects using cached project list
+                    projects = await role_manager._find_matching_projects(
+                        client=client,
+                        project_match=assignment.project_match,
+                        braintrust_org=org_name,
+                        cached_projects=all_projects,  # Pass cached projects
+                    )
+                    
+                    # Create ACL plan item for each project, but only if it doesn't already exist
+                    for project in projects:
+                        # Get group and role IDs to check if ACL already exists
+                        try:
+                            # Check for existing group first
+                            group = await client.find_group_by_name_cached(assignment.group_name)
+                            
+                            # If group doesn't exist, check if it will be created in this sync
+                            if not group:
+                                self._logger.info(
+                                    "Group not found in cache, checking plan",
+                                    group_name=assignment.group_name,
+                                    org_name=org_name
+                                )
+                                group = self._find_group_in_plan(current_plan, assignment.group_name, org_name)
+                                if group:
+                                    self._logger.info(
+                                        "Found group in plan",
+                                        group_name=assignment.group_name,
+                                        org_name=org_name
+                                    )
+                            
+                            role = await client.get_role_by_name_cached(assignment.role_name)
+                            
+                            # If role doesn't exist, check if it will be created in this sync
+                            if not role:
+                                role = self._find_role_in_plan(current_plan, assignment.role_name, org_name)
+                            
+                            if not group or not role:
+                                self._logger.warning(
+                                    "Skipping ACL planning - group or role not found",
+                                    group_name=assignment.group_name,
+                                    role_name=assignment.role_name,
+                                    org_name=org_name,
+                                    group_found=bool(group),
+                                    role_found=bool(role),
+                                )
+                                continue
+                            
+                            # Handle both existing and planned resources
+                            if isinstance(group, dict):
+                                group_id = group.get('id')
+                                group_is_planned = group.get('planned', False)
+                            else:
+                                group_id = getattr(group, 'id')
+                                group_is_planned = False
+                            
+                            if isinstance(role, dict):
+                                role_id = role.get('id')
+                                role_is_planned = role.get('planned', False)
+                            else:
+                                role_id = getattr(role, 'id')
+                                role_is_planned = False
+                            project_id = project.get('id')
+                            
+                            # Check if this ACL already exists
+                            acl_key = (project_id, group_id, role_id)
+                            if acl_key in existing_acl_keys:
+                                self._logger.debug(
+                                    "Skipping existing ACL during planning",
+                                    group_name=assignment.group_name,
+                                    role_name=assignment.role_name,
+                                    project_name=project.get("name"),
+                                    org_name=org_name,
+                                )
+                                continue
+                            
+                            # ACL doesn't exist, add it to the plan
+                            dependencies = []
+                            
+                            # Add dependency on group if it's planned to be created
+                            if group_is_planned:
+                                dependencies.append(f"group-{assignment.group_name}-{org_name}")
+                            
+                            # Add dependency on role if it's planned to be created
+                            if role_is_planned:
+                                dependencies.append(f"role-{assignment.role_name}-{org_name}")
+                            
+                            acl_items.append(SyncPlanItem(
+                                okta_resource_id=f"acl-{assignment.group_name}-{assignment.role_name}-{project.get('id')}-{org_name}",
+                                okta_resource_type="acl",
+                                okta_resource={
+                                    "group_name": assignment.group_name,
+                                    "role_name": assignment.role_name,
+                                    "project_name": project.get("name"),
+                                    "project_id": project.get("id"),
+                                },
+                                braintrust_org=org_name,
+                                action=SyncAction.CREATE,
+                                reason=f"Assign group '{assignment.group_name}' role '{assignment.role_name}' on project '{project.get('name')}'",
+                                dependencies=dependencies,
+                                metadata={
+                                    "group_name": assignment.group_name,
+                                    "role_name": assignment.role_name,
+                                    "project_name": project.get("name"),
+                                    "priority": assignment.priority,
+                                    "assignment_rule": assignment.model_dump(),
+                                    "group_planned": group_is_planned,
+                                    "role_planned": role_is_planned,
+                                }
+                            ))
+                            
+                        except Exception as e:
+                            self._logger.warning(
+                                "Error checking ACL existence during planning",
+                                group_name=assignment.group_name,
+                                role_name=assignment.role_name,
+                                project_name=project.get("name"),
+                                org_name=org_name,
+                                error=str(e),
+                            )
+                        
+            except Exception as e:
+                self._logger.warning(
+                    "Error planning ACLs for organization",
+                    org_name=org_name,
+                    error=str(e)
+                )
+        
+        self._logger.debug(
+            "Generated ACL plan",
+            items=len(acl_items),
+            organizations=target_organizations,
+        )
+        
+        return acl_items
+    
+    def _find_group_in_plan(self, plan: 'SyncPlan', group_name: str, org_name: str) -> Optional[Dict[str, Any]]:
+        """Find a group that will be created/updated in the current sync plan.
+        
+        Args:
+            plan: Current sync plan
+            group_name: Name of the group to find
+            org_name: Braintrust organization name
+            
+        Returns:
+            Group data if found in plan, None otherwise
+        """
+        # Check if this group will be created/updated in the current sync plan
+        
+        for group_item in plan.group_items:
+            if (group_item.braintrust_org == org_name and 
+                group_item.action in [SyncAction.CREATE, SyncAction.UPDATE]):
+                # Check if this is the group we're looking for
+                group_data = group_item.okta_resource
+                
+                # Try multiple ways to get the group name from the data structure
+                group_data_name = None
+                if isinstance(group_data, dict):
+                    # Try common dict keys for group names
+                    group_data_name = (
+                        group_data.get('name') or 
+                        group_data.get('displayName') or 
+                        group_data.get('profile', {}).get('name') or
+                        group_data.get('profile', {}).get('displayName')
+                    )
+                elif hasattr(group_data, 'name'):
+                    group_data_name = group_data.name
+                elif hasattr(group_data, 'displayName'):
+                    group_data_name = group_data.displayName
+                elif hasattr(group_data, 'profile'):
+                    profile = group_data.profile
+                    if hasattr(profile, 'name'):
+                        group_data_name = profile.name
+                    elif hasattr(profile, 'displayName'):
+                        group_data_name = profile.displayName
+                
+                # Debug: Log what we're comparing
+                self._logger.debug(
+                    "Comparing group names in plan",
+                    searching_for=group_name,
+                    found_in_data=group_data_name,
+                    data_type=type(group_data).__name__,
+                    org_name=org_name,
+                    action=group_item.action,
+                    matches=group_data_name == group_name
+                )
+                
+                if group_data_name == group_name:
+                    # Return a mock group object with an ID for ACL planning
+                    self._logger.debug(
+                        "Successfully found group in plan",
+                        group_name=group_name,
+                        org_name=org_name
+                    )
+                    return {
+                        'id': f"planned-group-{group_name}-{org_name}",
+                        'name': group_name,
+                        'planned': True
+                    }
+        
+        self._logger.debug(
+            "Group not found in any plan items",
+            group_name=group_name,
+            org_name=org_name,
+            total_group_items=len(plan.group_items)
+        )
+        return None
+    
+    def _find_role_in_plan(self, plan: 'SyncPlan', role_name: str, org_name: str) -> Optional[Dict[str, Any]]:
+        """Find a role that will be created/updated in the current sync plan.
+        
+        Args:
+            plan: Current sync plan
+            role_name: Name of the role to find
+            org_name: Braintrust organization name
+            
+        Returns:
+            Role data if found in plan, None otherwise
+        """
+        for role_item in plan.role_items:
+            if (role_item.braintrust_org == org_name and 
+                role_item.action in [SyncAction.CREATE, SyncAction.UPDATE]):
+                # Check if this is the role we're looking for
+                role_data = role_item.okta_resource
+                if isinstance(role_data, dict) and role_data.get('name') == role_name:
+                    # Return a mock role object with an ID for ACL planning
+                    return {
+                        'id': f"planned-role-{role_name}-{org_name}",
+                        'name': role_name,
+                        'planned': True
+                    }
+        return None
+    
     def _estimate_duration(self, plan: SyncPlan) -> float:
         """Estimate sync plan execution duration in minutes.
         
@@ -509,8 +1050,8 @@ class SyncPlanner:
         Returns:
             Sync rules dictionary with safe defaults
         """
-        # Use safe defaults since the current config model doesn't have these fields
-        return {
+        # Start with safe defaults since the current config model doesn't have these fields
+        sync_rules = {
             "sync_all": True,
             "create_missing": True,  # Default: create missing resources
             "update_existing": True,  # Default: update existing resources
@@ -523,7 +1064,52 @@ class SyncPlanner:
             "group_profile_filters": {},  # Default: no group profile filters (dict by org)
             "min_group_members": {},  # Default: no minimum members (dict by org)
             "limit": None,  # Default: no limit
+            "remove_extra": False,  # Default: don't remove extra resources
         }
+        
+        # Override with actual sync_options from config if available
+        if hasattr(self.config, 'sync_options') and self.config.sync_options:
+            sync_options = self.config.sync_options
+            if hasattr(sync_options, 'remove_extra'):
+                sync_rules["remove_extra"] = sync_options.remove_extra
+            if hasattr(sync_options, 'batch_size'):
+                sync_rules["batch_size"] = sync_options.batch_size
+            if hasattr(sync_options, 'max_retries'):
+                sync_rules["max_retries"] = sync_options.max_retries
+            if hasattr(sync_options, 'continue_on_error'):
+                sync_rules["continue_on_error"] = sync_options.continue_on_error
+        
+        # Add deletion policies from config if available (stateless approach)
+        if hasattr(self.config, 'deletion_policies') and self.config.deletion_policies:
+            deletion_policies = self.config.deletion_policies
+            # Convert Pydantic model to dict for syncer compatibility
+            sync_rules["deletion_policies"] = deletion_policies.model_dump()
+        
+        return sync_rules
+    
+    def _extract_okta_filters_from_config(self) -> Dict[str, str]:
+        """Extract Okta filters from sync configuration.
+        
+        Returns:
+            Dictionary mapping resource types to their Okta filters
+        """
+        filters = {}
+        
+        # Extract user filters from user sync mappings
+        if self.config.sync_rules.users and self.config.sync_rules.users.mappings:
+            # Use the first mapping's filter as the default user filter
+            # TODO: In the future, support multiple filters or merge them
+            first_mapping = self.config.sync_rules.users.mappings[0]
+            if first_mapping.okta_filter:
+                filters["user"] = first_mapping.okta_filter
+        
+        # Extract group filters from group sync mappings  
+        if self.config.sync_rules.groups and self.config.sync_rules.groups.mappings:
+            first_mapping = self.config.sync_rules.groups.mappings[0]
+            if first_mapping.okta_group_filter:
+                filters["group"] = first_mapping.okta_group_filter
+        
+        return filters
     
     async def validate_plan_preconditions(
         self,

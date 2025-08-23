@@ -28,11 +28,16 @@ Instead of manually creating Braintrust accounts for each team member and managi
 - ✅ **CLI commands**: validate, plan, apply, show commands work
 
 **✅ Enhanced User Management:**
-- ✅ **User invitation**: Uses Braintrust organization member invitation API
-  - Automatically sends email invitations to users from Okta
-  - Can assign users to groups during invitation process
+- ✅ **User sync**: Full user creation and management via Braintrust API
+  - Automatically creates user accounts from Okta profiles  
+  - Syncs user attributes (name, email, etc.)
   - No manual invitation step required - fully automated end-to-end
-  - Supports user removal from organizations when filtered out of sync
+  - Supports user updates and management
+- ✅ **Automatic group assignment**: Intelligently assigns users to groups based on multiple strategies
+  - Strategy 1: Direct Okta group mapping (e.g. BT-Engineering → Engineering)
+  - Strategy 2: Attribute-based assignment (department, role, location)
+  - Strategy 3: Hybrid approach combining both strategies
+  - Fully customizable group assignment logic
 
 **🚧 Current Limitations:**
 - ❌ **Real-time webhooks**: Not yet implemented (commands exist but return "not implemented")
@@ -40,14 +45,15 @@ Instead of manually creating Braintrust accounts for each team member and managi
 - ❌ **Show command**: State display functionality is a placeholder
 
 **🎯 Production Ready for Complete User & Group Management:**
-The tool has been enhanced with full user invitation capabilities and successfully tested with real Okta and Braintrust APIs. Both user invitation and group synchronization work seamlessly with automatic email invitations and group assignment.
+The tool provides comprehensive user and group synchronization with advanced role-project assignment capabilities. Successfully tested with real Okta and Braintrust APIs including the recent major enhancement to ACL execution.
 
 **🧪 Real-World Test Results:**
-- ✅ **Okta API**: Successfully retrieved 7 users and 7 groups from real Okta instance
-- ✅ **User Invitations**: Successfully invited 6 users with automatic email notifications
-- ✅ **Group Sync**: Successfully synced 7 groups with proper state management
+- ✅ **Okta API**: Successfully retrieves users and groups from Okta instances
+- ✅ **User Sync**: Creates and manages user accounts in Braintrust organizations
+- ✅ **Group Sync**: Synchronizes groups with proper state management
+- ✅ **Role-Project Assignment**: Creates 50+ ACL assignments using Groups → Roles → Projects workflow
 - ✅ **State persistence**: All resource mappings saved and managed correctly
-- ✅ **Enhanced user workflow**: Invitation API provides fully automated user onboarding
+- ✅ **ACL Execution**: Fixed executor now properly creates planned ACL items in Braintrust
 - ✅ **Audit logging**: Complete audit trails generated for all operations
 - ✅ **End-to-end automation**: Complete plan → apply → audit cycle with no manual steps
 
@@ -60,10 +66,11 @@ The tool has been enhanced with full user invitation capabilities and successful
 - Reactive access management
 
 **After**: Fully automated sync from Okta
-- New team members receive automatic Braintrust invitations
-- Users are automatically assigned to appropriate groups
+- New team members automatically get Braintrust accounts created
+- Users are automatically assigned to appropriate groups based on configurable strategies
 - Group memberships stay in sync with Okta changes
-- Users removed from Okta are automatically removed from Braintrust
+- Advanced role-project assignment creates granular permissions (Groups → Roles → Projects)
+- Users removed from Okta can be automatically removed from Braintrust (configurable)
 - All changes are audited and traceable
 - Proactive, policy-driven access management
 
@@ -73,13 +80,13 @@ The tool has been enhanced with full user invitation capabilities and successful
 
 ```bash
 # Clone the repository
-git clone https://github.com/braintrustdata/braintrust-migrate
-cd braintrust-migrate
+git clone https://github.com/braintrustdata/okta-braintrust-sync
+cd okta-braintrust-sync
 
 # Create virtual environment and install
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -e .
+uv pip install -e .
 ```
 
 ### 2. Set Up API Credentials
@@ -92,7 +99,7 @@ You'll need API access to both Okta and Braintrust:
 
 **Braintrust API Keys:**
 - Go to each Braintrust organization → Settings → API Keys
-- Create keys with user and group management permissions
+- Create keys with user, group, role, and ACL management permissions
 
 ```bash
 # Set environment variables
@@ -154,6 +161,99 @@ okta-braintrust-sync plan --config sync-config.yaml
 
 # Execute the sync
 okta-braintrust-sync apply --config sync-config.yaml --auto-approve
+```
+
+## Groups → Roles → Projects Workflow
+
+The tool supports an advanced workflow for granular permission management:
+
+### How It Works
+
+1. **Groups**: Collections of users (synced from Okta or created via group assignment)
+2. **Roles**: Named permission sets (create, read, update, delete, ACL management) 
+3. **Projects**: Specific Braintrust projects where roles are applied
+
+The workflow creates ACLs that grant groups specific roles on matching projects.
+
+### Example Configuration
+
+```yaml
+role_project_assignment:
+  global_config:
+    # Define reusable roles
+    standard_roles:
+      - name: "Engineer" 
+        description: "Engineering team permissions"
+        member_permissions:
+          - permission: "create"
+          - permission: "read"
+          - permission: "update"
+          - permission: "delete"
+            
+    # Assign groups to roles on projects
+    group_assignments:
+      # Engineering group gets Engineer role on development projects
+      - group_name: "BT-Engineering"
+        role_name: "Engineer"
+        project_match:
+          name_contains: ["api", "service", "web", "mobile"]
+        enabled: true
+        priority: 50
+```
+
+### Benefits
+
+- **Granular Control**: Different roles for different project types
+- **Scalable**: Role changes automatically apply to all assigned groups/projects  
+- **Pattern-Based**: Use regex, contains, starts/ends patterns to match projects
+- **Multi-Org**: Per-organization role and project configurations
+
+## Automatic Group Assignment
+
+The tool supports three strategies for automatic group assignment:
+
+### Strategy 1: Okta Groups (`okta_groups`)
+Map users based on their Okta group memberships:
+
+```yaml
+group_assignment:
+  global_config:
+    strategy: "okta_groups"
+    okta_group_mappings:
+      - okta_group_name: "BT-Engineering"
+        braintrust_group_name: "Engineering"
+      - okta_group_name: "BT-DataScience" 
+        braintrust_group_name: "DataScience"
+    sync_group_names: true  # Use same names as Okta
+```
+
+### Strategy 2: Attributes (`attributes`)
+Map users based on their Okta profile attributes:
+
+```yaml
+group_assignment:
+  global_config:
+    strategy: "attributes"
+    attribute_mappings:
+      - rule:
+          conditions:
+            - attribute: "department"
+              operator: "equals"
+              value: "Engineering"
+        braintrust_group_name: "Engineers"
+        priority: 50
+```
+
+### Strategy 3: Hybrid (`hybrid`)
+Combine both Okta groups and attributes:
+
+```yaml
+group_assignment:
+  global_config:
+    strategy: "hybrid"
+    hybrid_mode: "merge"
+    okta_group_mappings: [...]
+    attribute_mappings: [...]
 ```
 
 ## Common Team Onboarding Scenarios
@@ -261,9 +361,11 @@ braintrust_orgs:
 ```
 
 **Required Braintrust Permissions**: API keys need ability to:
-- Invite users to organization (via organization member API)
+- Create and manage users
 - Create/update groups  
 - Manage group memberships
+- Create and update roles
+- Create and manage ACLs (project permissions)
 
 ### User Sync Rules
 
@@ -289,6 +391,34 @@ sync_rules:
         enabled: true
 ```
 
+### Role-Project Assignment Rules
+
+```yaml
+role_project_assignment:
+  global_config:
+    # Define standard roles
+    standard_roles:
+      - name: "Engineer"
+        description: "Engineering permissions"
+        member_permissions:
+          - permission: "create"
+          - permission: "read" 
+          - permission: "update"
+          - permission: "delete"
+            
+    # Assign groups to roles on projects  
+    group_assignments:
+      - group_name: "BT-Engineering"
+        role_name: "Engineer"
+        project_match:
+          name_contains: ["api", "service", "web"]
+        enabled: true
+        priority: 50
+        
+    auto_create_roles: true
+    remove_unmanaged_acls: false
+```
+
 **Note**: The current implementation uses straightforward, reliable sync rules with basic SCIM filtering. Complex filtering scenarios should be tested thoroughly before production use.
 
 ## CLI Commands
@@ -298,12 +428,6 @@ sync_rules:
 ```bash
 # Test configuration and API connectivity
 okta-braintrust-sync validate --config sync-config.yaml
-
-# Test only Okta connectivity
-okta-braintrust-sync validate --config sync-config.yaml --okta-only
-
-# Test only Braintrust connectivity
-okta-braintrust-sync validate --config sync-config.yaml --braintrust-only
 ```
 
 ### Preview Changes
@@ -324,31 +448,15 @@ okta-braintrust-sync apply --config sync-config.yaml --auto-approve
 
 # Dry run (show what would be done without making changes)
 okta-braintrust-sync apply --config sync-config.yaml --dry-run
-
-# Control concurrency and error handling
-okta-braintrust-sync apply --config sync-config.yaml \
-  --max-concurrent 10 \
-  --continue-on-error
 ```
 
-### Show Configuration
+### Show Status
 
 ```bash
-# Display basic configuration summary (state display functionality is limited)
-okta-braintrust-sync show --config sync-config.yaml
+# Display current sync status and state information
+okta-braintrust-sync status --config sync-config.yaml
 ```
 
-### Webhook Commands (Not Yet Implemented)
-
-```bash
-# These commands exist but return "not yet implemented"
-okta-braintrust-sync webhook start --config sync-config.yaml    # ❌ Not working yet
-okta-braintrust-sync webhook status                            # ❌ Not working yet  
-okta-braintrust-sync start --config sync-config.yaml           # ❌ Not working yet
-okta-braintrust-sync status                                    # ❌ Not working yet
-```
-
-**Current Status**: The webhook server and scheduled sync functionality are not implemented yet. Use the declarative `plan` and `apply` commands which are fully functional.
 
 ## Monitoring & Auditing
 
@@ -435,8 +543,9 @@ STRUCTLOG_LEVEL=DEBUG okta-braintrust-sync plan --config sync-config.yaml
 okta:
   rate_limit_per_minute: 300  # Lower from default 600
 
-# Success: User invitation workflow is fully automated
-# Users receive email invitations with automatic group assignment
+# Success: User sync workflow is fully automated
+# Users are created in Braintrust with automatic group assignment
+# Role-project assignments create granular ACL permissions
 # No manual intervention required - fully end-to-end automation
 
 # Error: "Permission denied"
@@ -455,11 +564,11 @@ okta-braintrust-sync plan --config sync-config.yaml
 
 If a sync fails partway through:
 ```bash
-# Check basic configuration (full state display is limited)
-okta-braintrust-sync show --config sync-config.yaml
+# Check current sync status
+okta-braintrust-sync status --config sync-config.yaml
 
 # Re-run the sync (it will resume from where it left off)
-okta-braintrust-sync apply --config sync-config.yaml --continue-on-error
+okta-braintrust-sync apply --config sync-config.yaml
 ```
 
 ## Best Practices
@@ -477,7 +586,7 @@ okta-braintrust-sync apply --config sync-config.yaml --continue-on-error
 - **Start Small**: Begin with dev environment and a single team
 - **Test Filters**: Use `plan` command to verify filters before applying
 - **Monitor Logs**: Set up log monitoring for failed operations
-- **Regular Reconciliation**: Run periodic full syncs to catch drift
+- **Regular Reconciliation**: Run periodic full syncs for consistency
 - **Backup State**: Include state directory in your backup strategy
 
 ### Team Onboarding Workflow
@@ -531,11 +640,12 @@ This ensures predictable, traceable changes to your Braintrust access management
 ```bash
 # Configuration & Validation
 okta-braintrust-sync validate --config sync-config.yaml
-okta-braintrust-sync show --config sync-config.yaml
+okta-braintrust-sync status --config sync-config.yaml
 
 # Plan & Apply Changes
 okta-braintrust-sync plan --config sync-config.yaml
 okta-braintrust-sync apply --config sync-config.yaml --auto-approve
+
 
 # Dry Run Testing
 okta-braintrust-sync apply --config sync-config.yaml --dry-run

@@ -7,8 +7,9 @@ from braintrust_api.types import User as BraintrustUser
 
 from sync.clients.braintrust import BraintrustClient
 from sync.clients.okta import OktaClient, OktaUser
-from sync.core.state import StateManager
+from sync.core.enhanced_state import StateManager
 from sync.resources.base import BaseResourceSyncer
+from sync.resources.user_group_assignment import UserGroupAssignmentManager
 
 logger = structlog.get_logger(__name__)
 
@@ -23,6 +24,8 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
         state_manager: StateManager,
         identity_mapping_strategy: str = "email",
         custom_field_mappings: Optional[Dict[str, str]] = None,
+        enable_auto_group_assignment: bool = True,
+        group_assignment_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Initialize user syncer.
         
@@ -32,15 +35,34 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             state_manager: State manager for tracking sync operations
             identity_mapping_strategy: How to map user identities ("email", "custom_field", "mapping_file")
             custom_field_mappings: Custom field mappings for user attributes
+            enable_auto_group_assignment: Whether to automatically assign groups based on Okta data
+            group_assignment_config: Optional group assignment configuration per org
         """
         super().__init__(okta_client, braintrust_clients, state_manager)
         
         self.identity_mapping_strategy = identity_mapping_strategy
         self.custom_field_mappings = custom_field_mappings or {}
+        self.enable_auto_group_assignment = enable_auto_group_assignment
+        
+        # Initialize group assignment manager if enabled
+        self.group_assignment_manager = None
+        if enable_auto_group_assignment:
+            self._logger.info(
+                "Initializing UserGroupAssignmentManager",
+                group_assignment_config_orgs=list(group_assignment_config.keys()) if group_assignment_config else None,
+                has_config=bool(group_assignment_config)
+            )
+            self.group_assignment_manager = UserGroupAssignmentManager(
+                okta_client=okta_client,
+                braintrust_clients=braintrust_clients,
+                state_manager=state_manager,
+                group_assignment_config=group_assignment_config,
+            )
         
         self._logger = logger.bind(
             syncer_type="UserSyncer",
             identity_strategy=identity_mapping_strategy,
+            auto_group_assignment=enable_auto_group_assignment,
         )
     
     @property
@@ -164,11 +186,35 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             # Get group names if specified in additional data
             group_names = additional_data.get("group_names") if additional_data else None
             
+            # If auto group assignment is enabled and no groups specified, determine groups
+            if self.enable_auto_group_assignment and self.group_assignment_manager and not group_names:
+                self._logger.info(
+                    "Calling group assignment for user",
+                    user_email=okta_resource.get('profile', {}).get('email') if isinstance(okta_resource, dict) else getattr(okta_resource, 'profile', {}).get('email'),
+                    braintrust_org=braintrust_org
+                )
+                group_names = await self.group_assignment_manager.assign_groups_on_sync(
+                    okta_user=okta_resource,
+                    braintrust_org=braintrust_org,
+                )
+                self._logger.info(
+                    "Group assignment result",
+                    assigned_groups=group_names,
+                    braintrust_org=braintrust_org
+                )
+                self._logger.debug(
+                    "Auto-determined groups for user",
+                    email=user_data.get("email"),
+                    groups=group_names,
+                )
+            
             # Get user ID safely
-            okta_user_id = (
-                okta_resource.get("id") if isinstance(okta_resource, dict)
-                else okta_resource.id
-            )
+            okta_user_id = None
+            if okta_resource is not None:
+                okta_user_id = (
+                    okta_resource.get("id") if isinstance(okta_resource, dict)
+                    else getattr(okta_resource, 'id', None)
+                )
             
             self._logger.debug(
                 "Inviting Braintrust user",
@@ -176,7 +222,39 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                 email=user_data.get("email"),
                 braintrust_org=braintrust_org,
                 groups=group_names or [],
+                auto_assigned=self.enable_auto_group_assignment and not (additional_data and additional_data.get("group_names")),
             )
+            
+            # Ensure all assigned groups exist before inviting user
+            if group_names:
+                for group_name in group_names:
+                    try:
+                        # Check if group exists
+                        existing_group = await client.find_group_by_name_cached(group_name)
+                        if not existing_group:
+                            self._logger.info(
+                                "Auto-creating group for user assignment",
+                                group_name=group_name,
+                                braintrust_org=braintrust_org,
+                                user_email=user_data["email"]
+                            )
+                            # Create the group
+                            await client.create_group(
+                                name=group_name,
+                                description=f"Auto-created group from okta_group_mappings",
+                                member_users=[],
+                                member_groups=[]
+                            )
+                            # Clear the groups cache since we just created a group
+                            client._groups_cache = None
+                            client._groups_cache_by_name = None
+                    except Exception as e:
+                        self._logger.warning(
+                            "Failed to auto-create group",
+                            group_name=group_name,
+                            error=str(e),
+                            braintrust_org=braintrust_org
+                        )
             
             # Use invitation API instead of direct user creation
             invitation_response = await client.invite_user_to_organization(
@@ -212,10 +290,12 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             
         except Exception as e:
             # Get user ID safely for error logging
-            okta_user_id = (
-                okta_resource.get("id") if isinstance(okta_resource, dict)
-                else okta_resource.id
-            )
+            okta_user_id = None
+            if okta_resource is not None:
+                okta_user_id = (
+                    okta_resource.get("id") if isinstance(okta_resource, dict)
+                    else getattr(okta_resource, 'id', None)
+                )
             self._logger.error(
                 "Failed to invite Braintrust user",
                 okta_user_id=okta_user_id,
@@ -233,6 +313,9 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
     ) -> BraintrustUser:
         """Update an existing user in Braintrust.
         
+        Note: This method should never be called since calculate_updates() always
+        returns empty dict. This is a safety check.
+        
         Args:
             braintrust_resource_id: Braintrust user ID
             okta_resource: Source Okta user
@@ -241,42 +324,29 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             
         Returns:
             Updated Braintrust user
+            
+        Raises:
+            NotImplementedError: Braintrust API doesn't support user updates
         """
-        if braintrust_org not in self.braintrust_clients:
-            raise ValueError(f"No Braintrust client configured for org: {braintrust_org}")
+        # Get user ID safely
+        okta_user_id = (
+            okta_resource.get("id") if isinstance(okta_resource, dict)
+            else okta_resource.id
+        )
         
-        try:
-            client = self.braintrust_clients[braintrust_org]
-            
-            self._logger.debug(
-                "Updating Braintrust user",
-                braintrust_user_id=braintrust_resource_id,
-                okta_user_id=okta_resource.id,
-                updates=list(updates.keys()),
-                braintrust_org=braintrust_org,
-            )
-            
-            braintrust_user = await client.update_user(braintrust_resource_id, updates)
-            
-            self._logger.info(
-                "Updated Braintrust user",
-                braintrust_user_id=braintrust_resource_id,
-                okta_user_id=okta_resource.id,
-                updated_fields=list(updates.keys()),
-                braintrust_org=braintrust_org,
-            )
-            
-            return braintrust_user
-            
-        except Exception as e:
-            self._logger.error(
-                "Failed to update Braintrust user",
-                braintrust_user_id=braintrust_resource_id,
-                okta_user_id=okta_resource.id,
-                braintrust_org=braintrust_org,
-                error=str(e),
-            )
-            raise
+        self._logger.error(
+            "User update attempted but not supported",
+            braintrust_user_id=braintrust_resource_id,
+            okta_user_id=okta_user_id,
+            braintrust_org=braintrust_org,
+            updates=list(updates.keys()),
+            note="Braintrust API doesn't support user updates"
+        )
+        
+        raise NotImplementedError(
+            "Braintrust API doesn't support user updates. "
+            "This method should not be called due to calculate_updates() returning empty dict."
+        )
     
     def get_resource_identifier(self, resource: OktaUser) -> str:
         """Get unique identifier for an Okta user.
@@ -359,13 +429,15 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             True if user should be synced
         """
         try:
-            # Check if user is active
+            # Check if user is active - include both ACTIVE and PROVISIONED users
             if sync_rules.get("only_active_users", True):
                 user_status = (
                     okta_resource.get("status") if isinstance(okta_resource, dict)
                     else okta_resource.status
                 )
-                if user_status != "ACTIVE":
+                # Accept both ACTIVE (fully activated) and PROVISIONED (created but not yet activated) users
+                valid_statuses = {"ACTIVE", "PROVISIONED"}
+                if user_status not in valid_statuses:
                     user_id = (
                         okta_resource.get("id") if isinstance(okta_resource, dict)
                         else okta_resource.id
@@ -475,93 +547,46 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
             )
             return True
     
-    def calculate_updates(
+    async def calculate_updates(
         self,
         okta_resource: OktaUser,
         braintrust_resource: BraintrustUser,
     ) -> Dict[str, Any]:
         """Calculate what updates are needed for a Braintrust user.
         
+        Note: Braintrust API doesn't support user updates, so this always returns
+        empty dict to force SKIP action instead of UPDATE action.
+        
         Args:
             okta_resource: Source Okta user
             braintrust_resource: Existing Braintrust user
             
         Returns:
-            Dictionary of fields that need updating
+            Empty dictionary (no updates supported)
         """
-        updates = {}
+        # Get user ID safely for logging
+        okta_user_id = (
+            okta_resource.get("id") if isinstance(okta_resource, dict)
+            else okta_resource.id
+        )
         
-        try:
-            # Extract current Okta user data
-            okta_data = self._extract_user_data(okta_resource)
-            
-            # Handle both dict and object formats for Braintrust resource
-            def get_braintrust_field(field_name: str) -> str:
-                if isinstance(braintrust_resource, dict):
-                    return braintrust_resource.get(field_name, "")
-                else:
-                    return getattr(braintrust_resource, field_name, "")
-            
-            # Compare first name
-            if okta_data["given_name"] != get_braintrust_field("given_name"):
-                updates["given_name"] = okta_data["given_name"]
-            
-            # Compare last name
-            if okta_data["family_name"] != get_braintrust_field("family_name"):
-                updates["family_name"] = okta_data["family_name"]
-            
-            # Compare email (usually shouldn't change, but handle it)
-            if okta_data["email"] != get_braintrust_field("email"):
-                updates["email"] = okta_data["email"]
-            
-            # Handle custom field mappings
-            if self.custom_field_mappings:
-                for okta_field, braintrust_field in self.custom_field_mappings.items():
-                    if okta_field in ["given_name", "family_name", "email"]:
-                        continue  # Already handled above
-                    
-                    # Handle both dict and object formats
-                    if isinstance(okta_resource, dict):
-                        profile = okta_resource.get("profile", {})
-                        okta_value = profile.get(okta_field)
-                    else:
-                        okta_value = okta_resource.profile.get(okta_field)
-                    braintrust_value = get_braintrust_field(braintrust_field)
-                    
-                    if okta_value != braintrust_value:
-                        updates[braintrust_field] = okta_value
-            
-            # Get user ID safely
-            okta_user_id = (
-                okta_resource.get("id") if isinstance(okta_resource, dict)
-                else okta_resource.id
-            )
-            
-            self._logger.debug(
-                "Calculated user updates",
-                okta_user_id=okta_user_id,
-                braintrust_user_id=get_braintrust_field("id") or "unknown",
-                updates=list(updates.keys()),
-            )
-            
-            return updates
-            
-        except Exception as e:
-            okta_user_id = (
-                okta_resource.get("id") if isinstance(okta_resource, dict)
-                else okta_resource.id
-            )
-            self._logger.error(
-                "Failed to calculate user updates",
-                okta_user_id=okta_user_id,
-                braintrust_user_id=(
-                    braintrust_resource.get("id", "unknown") 
-                    if isinstance(braintrust_resource, dict) 
-                    else getattr(braintrust_resource, "id", "unknown")
-                ),
-                error=str(e),
-            )
-            return {}
+        def get_braintrust_field(field_name: str) -> str:
+            if isinstance(braintrust_resource, dict):
+                return braintrust_resource.get(field_name, "")
+            else:
+                return getattr(braintrust_resource, field_name, "")
+        
+        self._logger.debug(
+            "Calculated user updates",
+            okta_user_id=okta_user_id,
+            braintrust_user_id=get_braintrust_field("id") or "unknown",
+            updates=[], # Always empty due to API limitations
+            note="User updates disabled - Braintrust API doesn't support user updates"
+        )
+        
+        # Always return empty dict to prevent UPDATE actions
+        # This forces the base class to generate SKIP actions for existing users
+        return {}
     
     def _extract_user_data(self, okta_user: OktaUser) -> Dict[str, Any]:
         """Extract user data from Okta user for Braintrust creation/update.
@@ -717,3 +742,333 @@ class UserSyncer(BaseResourceSyncer[OktaUser, BraintrustUser]):
                 error=str(e),
             )
             return None
+    
+    async def check_and_assign_groups_for_accepted_invitations(
+        self,
+        braintrust_org: str,
+        check_window_hours: int = 24,
+    ) -> Dict[str, Any]:
+        """Check for accepted invitations and assign users to groups.
+        
+        This method is a convenience wrapper around the group assignment manager.
+        
+        Args:
+            braintrust_org: Braintrust organization to check
+            check_window_hours: Only check invitations sent within this time window
+            
+        Returns:
+            Dictionary with assignment results
+        """
+        if not self.enable_auto_group_assignment or not self.group_assignment_manager:
+            return {
+                "error": "Auto group assignment is not enabled",
+                "checked_users": 0,
+                "accepted_users": 0,
+                "assigned_users": 0,
+            }
+        
+        return await self.group_assignment_manager.check_and_assign_groups(
+            braintrust_org=braintrust_org,
+            check_window_hours=check_window_hours,
+        )
+    
+    async def _generate_deletion_plan(
+        self,
+        okta_resources: List[OktaUser],
+        braintrust_org: str,
+        sync_rules: Dict[str, Any],
+        braintrust_resources: Optional[List[BraintrustUser]] = None,
+    ) -> List:
+        """Generate deletion plan for users that exist in Braintrust but not in Okta.
+        
+        Special handling for users: Only delete users who exist in the Okta org but have
+        non-ACTIVE status. Users who don't exist in Okta org at all should be ignored.
+        
+        Note: We fetch user details on-demand rather than storing PII in state files
+        for security and privacy reasons.
+        """
+        from sync.resources.base import SyncPlanItem, SyncAction
+        
+        plan_items = []
+        
+        try:
+            # Check if remove_extra is enabled - if not, skip deletion planning
+            if not sync_rules.get('remove_extra', False):
+                self._logger.debug(
+                    "Skipping user deletion planning - remove_extra is disabled",
+                    braintrust_org=braintrust_org,
+                )
+                return []
+            
+            # Fetch ALL users from Okta org (not just filtered ones) to determine
+            # which Braintrust users actually exist in the Okta org
+            all_okta_users = await self.okta_client.list_users(limit=10000)  # Get all users
+            okta_users_by_email = {
+                self.get_resource_identifier(user).lower(): user 
+                for user in all_okta_users
+            }
+            
+            # Fetch Braintrust resources if not provided
+            if braintrust_resources is None:
+                braintrust_resources = await self.get_braintrust_resources(braintrust_org)
+            
+            self._logger.debug(
+                "User deletion planning - checking against ALL Okta users",
+                braintrust_org=braintrust_org,
+                all_okta_users=len(all_okta_users),
+                braintrust_users=len(braintrust_resources),
+            )
+            
+            # Check each Braintrust user
+            for braintrust_user in braintrust_resources:
+                bt_email = self.get_braintrust_resource_identifier(braintrust_user).lower()
+                bt_user_id = self._get_braintrust_resource_id(braintrust_user)
+                
+                # Check if this Braintrust user has a corresponding Okta user
+                okta_user = okta_users_by_email.get(bt_email)
+                
+                if okta_user is None:
+                    # User doesn't exist in Okta org at all - IGNORE (don't delete)
+                    self._logger.debug(
+                        "Ignoring Braintrust user - not found in Okta org",
+                        user_email=bt_email,
+                        braintrust_org=braintrust_org,
+                    )
+                    continue
+                
+                # User exists in Okta org - check if they should be deleted based on status
+                okta_status = getattr(okta_user, 'status', 'UNKNOWN')
+                if okta_status != 'ACTIVE':
+                    # User exists in Okta but is not ACTIVE - consider for deletion
+                    should_delete = await self._should_delete_resource(
+                        braintrust_resource=braintrust_user,
+                        sync_rules=sync_rules,
+                        braintrust_org=braintrust_org,
+                    )
+                    
+                    if should_delete:
+                        plan_items.append(SyncPlanItem(
+                            okta_resource_id=bt_email,
+                            okta_resource_type=self.resource_type,
+                            okta_resource={},  # Will be enhanced below
+                            braintrust_org=braintrust_org,
+                            action=SyncAction.DELETE,
+                            reason=f"User exists in Okta with status '{okta_status}' (not ACTIVE)",
+                            existing_braintrust_id=bt_user_id,
+                            braintrust_resource_id=bt_user_id,
+                        ))
+                        
+                        self._logger.debug(
+                            "Planned user deletion - non-ACTIVE in Okta",
+                            user_email=bt_email,
+                            okta_status=okta_status,
+                            braintrust_org=braintrust_org,
+                        )
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to generate user deletion plan",
+                braintrust_org=braintrust_org,
+                error=str(e),
+            )
+            # Don't raise - deletion plan generation should not fail the whole sync
+            return []
+        
+        # Enhance deletion plan items with display information
+        # This provides user details for the plan display without affecting the core data
+        if plan_items:
+            try:
+                # We already fetched Braintrust users earlier, but get them again for display
+                # since we need the full user objects for proper display formatting
+                client = self.braintrust_clients.get(braintrust_org)
+                if client:
+                    display_bt_users = await client.list_users()
+                    bt_users_by_email = {user.email.lower(): user for user in display_bt_users}
+                    
+                    # Enhance each deletion plan item with user info for display
+                    for item in plan_items:
+                        if item.action == SyncAction.DELETE:
+                            # The okta_resource_id should be the email for users
+                            email_key = item.okta_resource_id.lower()
+                            
+                            if email_key in bt_users_by_email:
+                                bt_user = bt_users_by_email[email_key]
+                                # Get the Okta user info we fetched earlier
+                                okta_user = okta_users_by_email.get(email_key)
+                                okta_status = getattr(okta_user, 'status', 'UNKNOWN') if okta_user else 'NOT_IN_OKTA'
+                                
+                                # Create a display-friendly resource object
+                                # This is NOT stored, only used for plan display
+                                item.okta_resource = {
+                                    "id": bt_user.id,
+                                    "profile": {
+                                        "email": bt_user.email,
+                                        "firstName": bt_user.given_name or "",
+                                        "lastName": bt_user.family_name or "",
+                                        "login": bt_user.email,
+                                    },
+                                    "status": okta_status,  # Show actual Okta status
+                                }
+                            else:
+                                # User not found in current Braintrust users
+                                # This shouldn't happen with our new logic, but handle it
+                                item.okta_resource = {
+                                    "id": item.existing_braintrust_id or "unknown",
+                                    "profile": {
+                                        "email": item.okta_resource_id,
+                                        "firstName": "",
+                                        "lastName": "",
+                                        "login": item.okta_resource_id,
+                                    },
+                                    "status": "NOT_FOUND",
+                                }
+            except Exception as e:
+                self._logger.warning(
+                    "Failed to enhance deletion plan items for display",
+                    braintrust_org=braintrust_org,
+                    error=str(e),
+                )
+        
+        return plan_items
+    
+    async def _should_delete_resource(
+        self,
+        braintrust_resource: BraintrustUser,
+        sync_rules: Dict[str, Any],
+        braintrust_org: str,
+    ) -> bool:
+        """Determine if a user should be deleted based on explicit deletion policies.
+        
+        For users, we implement stateless deletion based on explicit configuration
+        rather than state tracking.
+        
+        Args:
+            braintrust_resource: The Braintrust user to evaluate for deletion
+            sync_rules: Sync rules configuration with deletion policies
+            braintrust_org: Target Braintrust organization
+            
+        Returns:
+            True if the user should be deleted, False otherwise
+        """
+        # Check for user-specific deletion policies
+        deletion_policies = sync_rules.get('deletion_policies', {})
+        users_policy = deletion_policies.get('users', {})
+        
+        # Default to False (conservative - don't delete users unless explicitly enabled)
+        if not users_policy.get('enabled', False):
+            return False
+        
+        # Check global dry run override
+        if deletion_policies.get('global_dry_run', False):
+            self._logger.info(
+                "User deletion blocked by global dry run policy",
+                user_email=getattr(braintrust_resource, 'email', 'unknown'),
+                braintrust_org=braintrust_org,
+            )
+            return False
+        
+        # Check if admin user preservation is enabled
+        if users_policy.get('preserve_admin_users', True):
+            # This is a placeholder - would need to implement admin detection
+            # For now, assume non-admin users are safe to delete
+            pass
+        
+        # Apply Braintrust-side conditions if specified
+        braintrust_conditions = users_policy.get('braintrust_conditions', [])
+        for condition in braintrust_conditions:
+            if isinstance(condition, dict) and condition.get('inactive_days'):
+                # Check if user has been inactive for specified days
+                # This is a placeholder - would need to implement inactive day checking
+                # For now, we'll skip this condition
+                continue
+        
+        # If no conditions block deletion, allow it
+        # The main criteria is that the user exists in Braintrust but not in Okta
+        # and deletion is explicitly enabled
+        return True
+    
+    async def delete_braintrust_resource(
+        self,
+        resource_id: str,
+        braintrust_org: str,
+    ) -> None:
+        """Delete a user from Braintrust.
+        
+        Args:
+            resource_id: Braintrust user ID to delete
+            braintrust_org: Target Braintrust organization
+        """
+        client = self.braintrust_clients[braintrust_org]
+        
+        try:
+            # Remove user from organization (this is the proper way to "delete" users in Braintrust)
+            # Users are managed through organization membership, not direct deletion
+            
+            # Convert resource_id to email if needed (resource_id might be email or user ID)
+            user_email = None
+            user_id = None
+            
+            if "@" in resource_id:
+                user_email = resource_id
+            else:
+                user_id = resource_id
+            
+            self._logger.info(
+                "Removing user from organization",
+                user_email=user_email,
+                user_id=user_id,
+                braintrust_org=braintrust_org,
+            )
+            
+            # Remove user from organization
+            result = await client.remove_organization_members(
+                emails=[user_email] if user_email else None,
+                user_ids=[user_id] if user_id else None,
+                org_name=braintrust_org
+            )
+            
+            self._logger.info(
+                "Successfully removed user from organization",
+                user_id=resource_id,
+                braintrust_org=braintrust_org,
+                result=result
+            )
+            
+            return result
+            
+        except Exception as e:
+            self._logger.error(
+                "Failed to remove user from organization", 
+                user_id=resource_id,
+                braintrust_org=braintrust_org,
+                error=str(e)
+            )
+            raise
+    
+    def _get_resource_id(self, okta_resource: OktaUser) -> Optional[str]:
+        """Get the ID from an Okta user.
+        
+        Args:
+            okta_resource: Okta user
+            
+        Returns:
+            User ID or None
+        """
+        if isinstance(okta_resource, dict):
+            return okta_resource.get('id')
+        else:
+            return getattr(okta_resource, 'id', None)
+    
+    def _get_braintrust_resource_id(self, braintrust_resource: BraintrustUser) -> Optional[str]:
+        """Get the ID from a Braintrust user.
+        
+        Args:
+            braintrust_resource: Braintrust user
+            
+        Returns:
+            User ID or None
+        """
+        if isinstance(braintrust_resource, dict):
+            return braintrust_resource.get('id')
+        else:
+            return getattr(braintrust_resource, 'id', None)

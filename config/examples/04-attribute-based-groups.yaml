@@ -1,0 +1,134 @@
+# Attribute-Based Group Assignment Example
+# Assign users to groups based on their Okta profile attributes
+
+# Okta API configuration
+okta:
+  domain: "${OKTA_ORG_NAME}.okta.com"
+  api_token: "${OKTA_API_TOKEN}"
+  rate_limit_per_minute: 600
+  timeout_seconds: 30
+
+# Braintrust organizations
+braintrust_orgs:
+  main:
+    api_key: "${BRAINTRUST_PROD_API_KEY}"
+    url: "https://api.braintrust.dev"
+    timeout_seconds: 30
+    rate_limit_per_minute: 300
+
+# User sync
+sync_rules:
+  users:
+    enabled: true
+    mappings:
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["main"]
+        enabled: true
+    
+    identity_mapping:
+      strategy: "email"
+      case_sensitive: false
+    
+    create_missing: true
+    update_existing: true
+    sync_profile_fields: ["firstName", "lastName", "email", "login", "department", "title"]
+  
+  groups:
+    enabled: false  # Groups created via group assignment
+
+# Attribute-based group assignment
+group_assignment:
+  global_config:
+    strategy: "attributes"
+    
+    attribute_mappings:
+      # Engineering department
+      - rule:
+          conditions:
+            - attribute: "department"
+              operator: "equals"
+              value: "Engineering"
+        braintrust_group_name: "Engineering"
+        priority: 50
+      
+      # Data science department
+      - rule:
+          conditions:
+            - attribute: "department"
+              operator: "equals"
+              value: "Data Science"
+        braintrust_group_name: "DataScience"
+        priority: 50
+      
+      # Product management department
+      - rule:
+          conditions:
+            - attribute: "department"
+              operator: "equals"
+              value: "Product"
+        braintrust_group_name: "ProductManagement"
+        priority: 50
+      
+      # Senior staff (based on title)
+      - rule:
+          conditions:
+            - attribute: "title"
+              operator: "regex"
+              value: "(Senior|Principal|Staff|Lead|Director|VP)"
+              case_sensitive: false
+        braintrust_group_name: "SeniorStaff"
+        priority: 30
+      
+      # Managers (based on title)
+      - rule:
+          conditions:
+            - attribute: "title"
+              operator: "contains"
+              value: "Manager"
+              case_sensitive: false
+        braintrust_group_name: "Managers"
+        priority: 40
+      
+      # Engineering managers (department AND title)
+      - rule:
+          conditions:
+            - attribute: "department"
+              operator: "equals"
+              value: "Engineering"
+            - attribute: "title"
+              operator: "contains"
+              value: "Manager"
+              case_sensitive: false
+          logic: "AND"
+        braintrust_group_name: "EngineeringManagers"
+        priority: 60
+    
+    auto_create_groups: true
+    default_groups: ["AllEmployees"]
+    max_groups_per_user: 10
+
+# Sync mode
+sync_modes:
+  declarative:
+    enabled: true
+    schedule: "0 */4 * * *"  # Every 4 hours
+    max_concurrent_orgs: 1
+  
+  realtime:
+    enabled: false
+
+# Sync options
+sync_options:
+  dry_run: false
+  batch_size: 50
+  max_retries: 3
+  retry_delay_seconds: 1.0
+  remove_extra: false
+  continue_on_error: true
+
+# Audit logging
+audit:
+  enabled: true
+  log_level: "INFO"
+  log_format: "json"
+  retention_days: 30

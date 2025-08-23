@@ -8,12 +8,14 @@ from braintrust_api import Braintrust
 from braintrust_api.types import Group, User
 from pydantic import SecretStr
 
+from sync.security.validation import validate_api_token, validate_url, validate_organization_name
 from sync.clients.exceptions import (
     APIError,
     BraintrustError,
     ResourceNotFoundError,
     ValidationError,
 )
+from sync.config.role_project_models import RoleDefinition, RolePermission
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +42,8 @@ class BraintrustClient:
             max_retries: Maximum retry attempts
             retry_delay_seconds: Initial retry delay
         """
+        # Store configuration - let the actual API calls validate credentials and URLs
+        
         self.api_url = api_url
         self.timeout_seconds = timeout_seconds
         self.rate_limit_per_minute = rate_limit_per_minute
@@ -57,6 +61,15 @@ class BraintrustClient:
         self._request_count = 0
         self._error_count = 0
         self._last_request_time: Optional[float] = None
+        
+        # ========== Caching for performance optimization ==========
+        # Cache users, groups and roles to avoid repeated API calls during sync operations
+        self._users_cache: Optional[List[User]] = None
+        self._users_cache_by_email: Optional[Dict[str, User]] = None
+        self._groups_cache: Optional[List[Group]] = None
+        self._roles_cache: Optional[List[Dict[str, Any]]] = None
+        self._groups_cache_by_name: Optional[Dict[str, Group]] = None
+        self._roles_cache_by_name: Optional[Dict[str, Dict[str, Any]]] = None
         
         # Extract organization name from API URL for logging
         parsed_url = urlparse(str(api_url))
@@ -118,7 +131,7 @@ class BraintrustClient:
             # Return info about the first org for health check purposes
             if org_list:
                 first_org = org_list[0]
-                return first_org.model_dump() if hasattr(first_org, 'model_dump') else dict(first_org)
+                return first_org.model_dump(mode='json') if hasattr(first_org, 'model_dump') else dict(first_org)
             else:
                 return {"organizations": [], "message": "No organizations found"}
         except Exception as e:
@@ -368,8 +381,58 @@ class BraintrustClient:
         """
         try:
             self._request_count += 1
-            group = self.client.groups.update(group_id, **updates)
-            self._logger.info("Updated group", group_id=group_id, fields=list(updates.keys()))
+            
+            # Handle membership updates with incremental API calls
+            if 'member_users' in updates or 'member_groups' in updates:
+                # Get current group to calculate differences
+                current_group = await self.get_group(group_id)
+                current_users = set(getattr(current_group, 'member_users', []) or [])
+                current_groups = set(getattr(current_group, 'member_groups', []) or [])
+                
+                # Calculate user membership changes
+                if 'member_users' in updates:
+                    target_users = set(updates['member_users'] or [])
+                    users_to_add = target_users - current_users
+                    users_to_remove = current_users - target_users
+                    
+                    # Apply user changes
+                    if users_to_add:
+                        await self.client.groups.update(group_id, add_member_users=list(users_to_add))
+                        self._logger.debug("Added users to group", group_id=group_id, users_added=len(users_to_add))
+                    
+                    if users_to_remove:
+                        await self.client.groups.update(group_id, remove_member_users=list(users_to_remove))
+                        self._logger.debug("Removed users from group", group_id=group_id, users_removed=len(users_to_remove))
+                
+                # Calculate group membership changes
+                if 'member_groups' in updates:
+                    target_groups = set(updates['member_groups'] or [])
+                    groups_to_add = target_groups - current_groups
+                    groups_to_remove = current_groups - target_groups
+                    
+                    # Apply group changes
+                    if groups_to_add:
+                        await self.client.groups.update(group_id, add_member_groups=list(groups_to_add))
+                        self._logger.debug("Added groups to group", group_id=group_id, groups_added=len(groups_to_add))
+                    
+                    if groups_to_remove:
+                        await self.client.groups.update(group_id, remove_member_groups=list(groups_to_remove))
+                        self._logger.debug("Removed groups from group", group_id=group_id, groups_removed=len(groups_to_remove))
+                
+                # Handle non-membership updates
+                non_membership_updates = {k: v for k, v in updates.items() if k not in ['member_users', 'member_groups']}
+                if non_membership_updates:
+                    group = self.client.groups.update(group_id, **non_membership_updates)
+                else:
+                    # Get updated group to return
+                    group = await self.get_group(group_id)
+                
+                self._logger.info("Updated group incrementally", group_id=group_id, fields=list(updates.keys()))
+            else:
+                # For non-membership updates, use regular update
+                group = self.client.groups.update(group_id, **updates)
+                self._logger.info("Updated group", group_id=group_id, fields=list(updates.keys()))
+            
             return group
         except Exception as e:
             self._error_count += 1
@@ -401,23 +464,35 @@ class BraintrustClient:
             # Get current group to merge members
             current_group = await self.get_group(group_id)
             
-            # Merge current and new members
-            current_users = set(getattr(current_group, 'member_users', []) or [])
-            current_groups = set(getattr(current_group, 'member_groups', []) or [])
+            # Get current members as lists
+            current_users = list(getattr(current_group, 'member_users', []) or [])
+            current_groups = list(getattr(current_group, 'member_groups', []) or [])
             
+            # Add new members to existing ones (avoid duplicates)
             if user_ids:
-                current_users.update(user_ids)
+                for user_id in user_ids:
+                    if user_id not in current_users:
+                        current_users.append(user_id)
             if group_ids:
-                current_groups.update(group_ids)
+                for group_id_to_add in group_ids:
+                    if group_id_to_add not in current_groups:
+                        current_groups.append(group_id_to_add)
             
-            # Update group with merged membership
-            updates = {}
-            if current_users:
-                updates['member_users'] = list(current_users)
-            if current_groups:
-                updates['member_groups'] = list(current_groups)
-            
-            return await self.update_group(group_id, updates)
+            # Use replace to set the complete membership
+            self._request_count += 1
+            group = self.client.groups.replace(
+                name=current_group.name,
+                description=getattr(current_group, 'description', None),
+                member_users=current_users,
+                member_groups=current_groups,
+            )
+            self._logger.info(
+                "Updated group membership using replace",
+                group_id=group.id,
+                total_users=len(current_users),
+                total_groups=len(current_groups),
+            )
+            return group
             
         except Exception as e:
             self._error_count += 1
@@ -769,7 +844,7 @@ class BraintrustClient:
     # Search and Query Methods
     
     async def find_user_by_email(self, email: str) -> Optional[User]:
-        """Find a user by email address.
+        """Find a user by email address using cache for optimal performance.
         
         Args:
             email: Email address to search for
@@ -778,9 +853,27 @@ class BraintrustClient:
             User object if found, None otherwise
         """
         try:
+            # Use cached lookup if available, otherwise populate cache
+            if self._users_cache_by_email is None:
+                users = await self.list_users()
+                # Build email-to-user mapping for O(1) lookups
+                self._users_cache_by_email = {}
+                for user in users:
+                    user_email = (
+                        user.get('email') if isinstance(user, dict)
+                        else getattr(user, 'email', None)
+                    )
+                    if user_email:
+                        self._users_cache_by_email[user_email] = user
+            
+            # O(1) lookup instead of O(N) linear search
+            return self._users_cache_by_email.get(email)
+            
+        except Exception as e:
+            self._logger.warning("Error searching for user by email", email=email, error=str(e))
+            # Fallback to original method
             users = await self.list_users()
             for user in users:
-                # Handle both dict and object formats
                 user_email = (
                     user.get('email') if isinstance(user, dict)
                     else getattr(user, 'email', None)
@@ -788,12 +881,9 @@ class BraintrustClient:
                 if user_email == email:
                     return user
             return None
-        except Exception as e:
-            self._logger.warning("Error searching for user by email", email=email, error=str(e))
-            return None
     
     async def find_group_by_name(self, name: str) -> Optional[Group]:
-        """Find a group by name.
+        """Find a group by name using cache for optimal performance.
         
         Args:
             name: Group name to search for
@@ -802,9 +892,27 @@ class BraintrustClient:
             Group object if found, None otherwise
         """
         try:
+            # Use cached lookup if available, otherwise populate cache
+            if self._groups_cache_by_name is None:
+                groups = await self.list_groups()
+                # Build name-to-group mapping for O(1) lookups
+                self._groups_cache_by_name = {}
+                for group in groups:
+                    group_name = (
+                        group.get('name') if isinstance(group, dict)
+                        else getattr(group, 'name', None)
+                    )
+                    if group_name:
+                        self._groups_cache_by_name[group_name] = group
+            
+            # O(1) lookup instead of O(N) linear search
+            return self._groups_cache_by_name.get(name)
+            
+        except Exception as e:
+            self._logger.warning("Error searching for group by name", name=name, error=str(e))
+            # Fallback to original method
             groups = await self.list_groups()
             for group in groups:
-                # Handle both dict and object formats
                 group_name = (
                     group.get('name') if isinstance(group, dict)
                     else getattr(group, 'name', None)
@@ -812,6 +920,681 @@ class BraintrustClient:
                 if group_name == name:
                     return group
             return None
+    
+    # ========== Caching Methods for Performance Optimization ==========
+    
+    async def _ensure_groups_cache(self) -> None:
+        """Ensure groups cache is populated."""
+        if self._groups_cache is None or self._groups_cache_by_name is None:
+            self._logger.debug("Populating groups cache")
+            groups = await self.list_groups()
+            self._groups_cache = groups
+            
+            # Build name-to-group mapping for O(1) lookups
+            self._groups_cache_by_name = {}
+            for group in groups:
+                group_name = (
+                    group.get('name') if isinstance(group, dict)
+                    else getattr(group, 'name', None)
+                )
+                if group_name:
+                    self._groups_cache_by_name[group_name] = group
+            
+            self._logger.debug(
+                "Groups cache populated",
+                cached_groups=len(self._groups_cache),
+                unique_names=len(self._groups_cache_by_name)
+            )
+    
+    async def _ensure_roles_cache(self) -> None:
+        """Ensure roles cache is populated."""
+        if self._roles_cache is None or self._roles_cache_by_name is None:
+            self._logger.debug("Populating roles cache")
+            roles = await self.list_roles()
+            self._roles_cache = roles
+            
+            # Build name-to-role mapping for O(1) lookups
+            self._roles_cache_by_name = {}
+            for role in roles:
+                role_name = role.get('name') if isinstance(role, dict) else None
+                if role_name:
+                    self._roles_cache_by_name[role_name] = role
+            
+            self._logger.debug(
+                "Roles cache populated", 
+                cached_roles=len(self._roles_cache),
+                unique_names=len(self._roles_cache_by_name)
+            )
+    
+    async def find_group_by_name_cached(self, name: str) -> Optional[Group]:
+        """Find a group by name using cache for performance.
+        
+        Args:
+            name: Group name to search for
+            
+        Returns:
+            Group object if found, None otherwise
+        """
+        try:
+            await self._ensure_groups_cache()
+            return self._groups_cache_by_name.get(name)
         except Exception as e:
-            self._logger.warning("Error searching for group by name", name=name, error=str(e))
+            self._logger.warning("Error searching for group by name (cached)", name=name, error=str(e))
+            # Fallback to non-cached method
+            return await self.find_group_by_name(name)
+    
+    async def get_role_by_name_cached(self, role_name: str) -> Optional[Dict[str, Any]]:
+        """Get a role by name using cache for performance.
+        
+        Args:
+            role_name: Name of the role to find
+            
+        Returns:
+            Role object if found, None otherwise
+        """
+        try:
+            await self._ensure_roles_cache()
+            return self._roles_cache_by_name.get(role_name)
+        except Exception as e:
+            self._logger.warning("Error searching for role by name (cached)", role_name=role_name, error=str(e))
+            # Fallback to non-cached method
+            return await self.get_role_by_name(role_name)
+    
+    def clear_caches(self) -> None:
+        """Clear all caches. Useful when users, groups or roles are modified during sync."""
+        self._users_cache = None
+        self._users_cache_by_email = None
+        self._groups_cache = None
+        self._roles_cache = None
+        self._groups_cache_by_name = None
+        self._roles_cache_by_name = None
+        self._logger.debug("All caches cleared")
+    
+    # ========== Role Management Methods ==========
+    
+    async def create_role(self, role_definition: RoleDefinition) -> Dict[str, Any]:
+        """Create a new role in the organization.
+        
+        Args:
+            role_definition: Role definition with name, description, and permissions
+            
+        Returns:
+            Created role object with ID
+            
+        Raises:
+            BraintrustError: If role creation fails
+        """
+        try:
+            self._request_count += 1
+            
+            # Convert RoleDefinition to API format
+            member_permissions = []
+            for perm in role_definition.member_permissions:
+                perm_dict = {"permission": perm.permission.value}
+                if perm.restrict_object_type:
+                    perm_dict["restrict_object_type"] = perm.restrict_object_type.value
+                else:
+                    perm_dict["restrict_object_type"] = None
+                member_permissions.append(perm_dict)
+            
+            payload = {
+                "name": role_definition.name,
+                "description": role_definition.description,
+                "member_permissions": member_permissions
+            }
+            
+            response = await self._make_request("POST", "/v1/role", payload)
+            
+            self._logger.info(
+                "Created role",
+                role_name=role_definition.name,
+                permission_count=len(member_permissions),
+                role_id=response.get('id'),
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def get_role_by_name(self, role_name: str) -> Optional[Dict[str, Any]]:
+        """Get a role by name.
+        
+        Args:
+            role_name: Name of the role to find
+            
+        Returns:
+            Role object if found, None otherwise
+        """
+        try:
+            self._request_count += 1
+            
+            # Construct URL with query parameter (URL-encode the role name)
+            from urllib.parse import urlencode
+            query_params = urlencode({"role_name": role_name})
+            endpoint = f"/v1/role?{query_params}"
+            response = await self._make_request("GET", endpoint)
+            
+            # API returns {objects: [...]} format
+            roles = response.get("objects", [])
+            if roles:
+                return roles[0]
             return None
+            
+        except Exception as e:
+            self._logger.warning(
+                "Error getting role by name",
+                role_name=role_name,
+                error=str(e)
+            )
+            return None
+    
+    async def list_roles(self) -> List[Dict[str, Any]]:
+        """List all roles in the organization.
+        
+        Returns:
+            List of role objects
+        """
+        try:
+            self._request_count += 1
+            
+            response = await self._make_request("GET", "/v1/role")
+            
+            return response.get("objects", [])
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def update_role(
+        self,
+        role_id: str,
+        member_permissions: List[RolePermission],
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update an existing role.
+        
+        Args:
+            role_id: UUID of the role to update
+            member_permissions: New set of permissions for the role
+            name: Optional new name for the role
+            description: Optional new description for the role
+            
+        Returns:
+            Updated role object
+            
+        Raises:
+            BraintrustError: If role update fails
+        """
+        try:
+            self._request_count += 1
+            
+            # Convert permissions to API format
+            api_permissions = []
+            for perm in member_permissions:
+                perm_dict = {"permission": perm.permission.value}
+                if perm.restrict_object_type:
+                    perm_dict["restrict_object_type"] = perm.restrict_object_type.value
+                else:
+                    perm_dict["restrict_object_type"] = None
+                api_permissions.append(perm_dict)
+            
+            payload = {"member_permissions": api_permissions}
+            if name:
+                payload["name"] = name
+            if description:
+                payload["description"] = description
+            
+            response = await self._make_request("PATCH", f"/v1/role/{role_id}", payload)
+            
+            self._logger.info(
+                "Updated role",
+                role_id=role_id,
+                permission_count=len(api_permissions),
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def delete_role(self, role_id: str) -> bool:
+        """Delete a role.
+        
+        Args:
+            role_id: UUID of the role to delete
+            
+        Returns:
+            True if deletion was successful
+            
+        Raises:
+            BraintrustError: If role deletion fails
+        """
+        try:
+            self._request_count += 1
+            
+            await self._make_request("DELETE", f"/v1/role/{role_id}")
+            
+            self._logger.info("Deleted role", role_id=role_id)
+            
+            return True
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    # ========== ACL Management Methods ==========
+    
+    async def create_acl(
+        self,
+        object_type: str,
+        object_id: str,
+        group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        role_id: Optional[str] = None,
+        permission: Optional[str] = None,
+        restrict_object_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a single ACL entry.
+        
+        Args:
+            object_type: Type of object (e.g., 'project', 'organization')
+            object_id: UUID of the object
+            group_id: UUID of group (exactly one of group_id/user_id required)
+            user_id: UUID of user (exactly one of group_id/user_id required)
+            role_id: UUID of role (exactly one of role_id/permission required)
+            permission: Direct permission (exactly one of role_id/permission required)
+            restrict_object_type: Optional restriction to specific object types
+            
+        Returns:
+            Created ACL object
+            
+        Raises:
+            BraintrustError: If ACL creation fails
+        """
+        try:
+            self._request_count += 1
+            
+            payload = {
+                "object_type": object_type,
+                "object_id": object_id,
+            }
+            
+            # Add user or group (exactly one required)
+            if group_id:
+                payload["group_id"] = group_id
+            elif user_id:
+                payload["user_id"] = user_id
+            else:
+                raise ValidationError("Either group_id or user_id must be provided")
+            
+            # Add role or permission (exactly one required)
+            if role_id:
+                payload["role_id"] = role_id
+            elif permission:
+                payload["permission"] = permission
+            else:
+                raise ValidationError("Either role_id or permission must be provided")
+            
+            if restrict_object_type:
+                payload["restrict_object_type"] = restrict_object_type
+            
+            response = await self._make_request("POST", "/v1/acl", payload)
+            
+            self._logger.info(
+                "Created ACL",
+                object_type=object_type,
+                group_id=group_id,
+                user_id=user_id,
+                role_id=role_id,
+                permission=permission,
+                acl_id=response.get('id'),
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def batch_update_acls(
+        self,
+        add_acls: List[Dict[str, Any]],
+        remove_acls: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Batch update ACLs (add and/or remove multiple ACLs).
+        
+        This is the preferred method for adding a group to multiple projects.
+        
+        Args:
+            add_acls: List of ACL entries to add
+            remove_acls: Optional list of ACL entries to remove
+            
+        Returns:
+            Dictionary with added_acls and removed_acls lists
+            
+        Raises:
+            BraintrustError: If batch update fails
+        """
+        try:
+            self._request_count += 1
+            
+            payload = {
+                "add_acls": add_acls,
+                "remove_acls": remove_acls or []
+            }
+            
+            response = await self._make_request("POST", "/v1/acl/batch_update", payload)
+            
+            self._logger.info(
+                "Batch updated ACLs",
+                added_count=len(response.get("added_acls", [])),
+                removed_count=len(response.get("removed_acls", [])),
+            )
+            
+            return response
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def list_acls(
+        self,
+        object_type: Optional[str] = None,
+        object_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List ACLs with optional filtering.
+        
+        Args:
+            object_type: Filter by object type
+            object_id: Filter by object ID
+            group_id: Filter by group ID
+            user_id: Filter by user ID
+            
+        Returns:
+            List of ACL objects
+        """
+        try:
+            self._request_count += 1
+            
+            # Construct URL with query parameters
+            from urllib.parse import urlencode
+            params = {}
+            if object_type:
+                params["object_type"] = object_type
+            if object_id:
+                params["object_id"] = object_id
+            if group_id:
+                params["group_id"] = group_id
+            if user_id:
+                params["user_id"] = user_id
+            
+            endpoint = "/v1/acl"
+            if params:
+                query_params = urlencode(params)
+                endpoint = f"/v1/acl?{query_params}"
+            
+            response = await self._make_request("GET", endpoint)
+            
+            return response.get("objects", [])
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def list_org_acls(
+        self,
+        org_name: str,
+        object_type: Optional[str] = None,
+        group_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List all ACLs in an organization (requires read_acls permission at org level).
+        
+        Args:
+            org_name: Organization name
+            object_type: Optional filter by object type
+            group_id: Optional filter by group ID
+            user_id: Optional filter by user ID
+            
+        Returns:
+            List of ACL objects
+        """
+        try:
+            self._request_count += 1
+            
+            # Construct URL with query parameters
+            # Note: org_name is not needed as the API key is already tied to an organization
+            from urllib.parse import urlencode
+            params = {}
+            if object_type:
+                params["object_type"] = object_type
+            if group_id:
+                params["group_id"] = group_id
+            if user_id:
+                params["user_id"] = user_id
+            
+            if params:
+                query_params = urlencode(params)
+                endpoint = f"/v1/acl/list_org?{query_params}"
+            else:
+                endpoint = "/v1/acl/list_org"
+            response = await self._make_request("GET", endpoint)
+            
+            return response.get("objects", [])
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def delete_acl(self, acl_id: str) -> bool:
+        """Delete an ACL entry.
+        
+        Args:
+            acl_id: UUID of the ACL to delete
+            
+        Returns:
+            True if deletion was successful
+            
+        Raises:
+            BraintrustError: If ACL deletion fails
+        """
+        try:
+            self._request_count += 1
+            
+            await self._make_request("DELETE", f"/v1/acl/{acl_id}")
+            
+            self._logger.info("Deleted ACL", acl_id=acl_id)
+            
+            return True
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    # ========== Project Management Methods ==========
+    
+    async def list_projects(self, org_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List all projects in the organization.
+        
+        Args:
+            org_name: Optional organization name filter
+            
+        Returns:
+            List of project objects
+        """
+        try:
+            self._request_count += 1
+            
+            # Construct URL with query parameters if needed
+            from urllib.parse import urlencode
+            endpoint = "/v1/project"
+            if org_name:
+                query_params = urlencode({"org_name": org_name})
+                endpoint = f"/v1/project?{query_params}"
+            
+            response = await self._make_request("GET", endpoint)
+            
+            return response.get("objects", [])
+            
+        except Exception as e:
+            self._error_count += 1
+            raise self._convert_to_braintrust_error(e) from e
+    
+    async def get_project_by_name(
+        self,
+        project_name: str,
+        org_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a project by name.
+        
+        Args:
+            project_name: Name of the project to find
+            org_name: Optional organization name
+            
+        Returns:
+            Project object if found, None otherwise
+        """
+        try:
+            self._request_count += 1
+            
+            # Construct URL with query parameters
+            from urllib.parse import urlencode
+            params = {"project_name": project_name}
+            if org_name:
+                params["org_name"] = org_name
+            
+            query_params = urlencode(params)
+            endpoint = f"/v1/project?{query_params}"
+            response = await self._make_request("GET", endpoint)
+            
+            projects = response.get("objects", [])
+            if projects:
+                return projects[0]
+            return None
+            
+        except Exception as e:
+            self._logger.warning(
+                "Error getting project by name",
+                project_name=project_name,
+                error=str(e)
+            )
+            return None
+    
+    # ========== High-Level Workflow Methods ==========
+    
+    async def assign_group_role_to_projects(
+        self,
+        group_name: str,
+        role_name: str,
+        project_names: List[str],
+        org_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Assign a group with a role to multiple projects.
+        
+        This is a high-level method that combines multiple API calls to:
+        1. Find the group by name
+        2. Find the role by name
+        3. Find projects by names (or use project IDs if provided)
+        4. Create ACLs via batch update
+        
+        Args:
+            group_name: Name of the group
+            role_name: Name of the role
+            project_names: List of project names or UUIDs
+            org_name: Optional organization name
+            
+        Returns:
+            Dictionary with success status and results
+        """
+        try:
+            # Step 1: Get the group (using cache for performance), create if missing
+            group = await self.find_group_by_name_cached(group_name)
+            if not group:
+                self._logger.info(
+                    "Group not found, creating it",
+                    group_name=group_name,
+                    org_name=org_name
+                )
+                # Auto-create the missing group with basic settings
+                group = await self.create_group(
+                    name=group_name,
+                    description=f"Auto-created group for role assignments",
+                    member_users=[],
+                    member_groups=[]
+                )
+                # Clear the groups cache since we just created a group
+                self._groups_cache = None
+                self._groups_cache_by_name = None
+            
+            group_id = group.get('id') if isinstance(group, dict) else getattr(group, 'id')
+            
+            # Step 2: Get the role (using cache for performance)
+            role = await self.get_role_by_name_cached(role_name)
+            if not role:
+                raise ResourceNotFoundError(f"Role '{role_name}' not found")
+            
+            role_id = role.get('id')
+            
+            # Step 3: Get project IDs
+            project_ids = []
+            for project_name in project_names:
+                # Check if it's already a UUID
+                if self._is_uuid(project_name):
+                    project_ids.append(project_name)
+                else:
+                    # Look up by name
+                    project = await self.get_project_by_name(project_name, org_name)
+                    if not project:
+                        raise ResourceNotFoundError(f"Project '{project_name}' not found")
+                    project_ids.append(project.get('id'))
+            
+            # Step 4: Build ACL entries
+            acl_entries = []
+            for project_id in project_ids:
+                acl_entries.append({
+                    "object_type": "project",
+                    "object_id": project_id,
+                    "group_id": group_id,
+                    "role_id": role_id
+                })
+            
+            # Step 5: Batch create ACLs
+            result = await self.batch_update_acls(add_acls=acl_entries)
+            
+            return {
+                "success": True,
+                "group_name": group_name,
+                "group_id": group_id,
+                "role_name": role_name,
+                "role_id": role_id,
+                "project_count": len(project_ids),
+                "added_acls": result.get("added_acls", []),
+                "message": f"Successfully assigned group '{group_name}' with role '{role_name}' to {len(project_ids)} projects"
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "group_name": group_name,
+                "role_name": role_name,
+                "error": str(e)
+            }
+    
+    def _is_uuid(self, value: str) -> bool:
+        """Check if a string looks like a UUID.
+        
+        Args:
+            value: String to check
+            
+        Returns:
+            True if the string looks like a UUID
+        """
+        import re
+        uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+        return bool(uuid_pattern.match(value))

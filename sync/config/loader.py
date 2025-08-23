@@ -3,22 +3,146 @@
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 import yaml
 from pydantic import ValidationError
 
 from sync.config.models import SyncConfig
+from sync.security.validation import (
+    sanitize_log_input, validate_environment_variable_name, validate_file_path,
+    validate_cron_expression
+)
 
 
 class ConfigurationError(Exception):
     """Raised when configuration loading or validation fails."""
+
+
+class SecurityError(Exception):
+    """Raised when security validation fails."""
     pass
 
 
 class EnvironmentVariableError(ConfigurationError):
     """Raised when environment variable substitution fails."""
     pass
+
+
+# Security: Allowlist of permitted environment variables
+ALLOWED_ENV_VARS: Set[str] = {
+    # API Credentials
+    "OKTA_API_TOKEN",
+    "BRAINTRUST_API_KEY",
+    "BRAINTRUST_PROD_API_KEY",
+    "BRAINTRUST_DEV_API_KEY",
+    
+    # Organization Configuration
+    "BRAINTRUST_ORG_ID",
+    "BRAINTRUST_ORG_NAME",
+    "OKTA_DOMAIN",
+    "OKTA_ORG_NAME",
+    
+    # Logging and Monitoring
+    "LOG_LEVEL",
+    "LOG_FORMAT",
+    "AUDIT_LOG_FILE",
+    
+    # Rate Limiting
+    "OKTA_RATE_LIMIT_PER_MINUTE",
+    "BRAINTRUST_RATE_LIMIT_PER_MINUTE",
+    
+    # Sync Configuration
+    "DRY_RUN",
+    "BATCH_SIZE",
+    "MAX_CONCURRENT_OPERATIONS",
+    
+    # State Management
+    "STATE_DIR",
+    "ENABLE_ENHANCED_TRACKING",
+    
+    # Security
+    "REQUIRE_HTTPS",
+    "VERIFY_SSL",
+    
+    # Webhook Configuration
+    "WEBHOOK_SECRET",
+    "WEBHOOK_PORT",
+    
+    # Common Environment Variables
+    "HOME",
+    "USER",
+    "PATH",
+    "PWD",
+    "SHELL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+}
+
+
+def _validate_env_var_name(var_name: str) -> None:
+    """Validate that an environment variable is allowed.
+    
+    Args:
+        var_name: Environment variable name to validate
+        
+    Raises:
+        SecurityError: If the environment variable is not in the allowlist
+    """
+    # First validate the format of the environment variable name
+    if not validate_environment_variable_name(var_name):
+        raise SecurityError(
+            f"Invalid environment variable name format: '{sanitize_log_input(var_name)}'. "
+            "Environment variable names must contain only letters, digits, and underscores, "
+            "and cannot start with a digit."
+        )
+    
+    # Then check against allowlist or allowed patterns
+    if var_name not in ALLOWED_ENV_VARS:
+        # Check if it matches allowed patterns
+        import re
+        allowed_patterns = [
+            r'^BRAINTRUST_[A-Z0-9_]+_API_KEY$',  # BRAINTRUST_*_API_KEY pattern
+        ]
+        
+        pattern_matched = False
+        for pattern in allowed_patterns:
+            if re.match(pattern, var_name):
+                pattern_matched = True
+                break
+        
+        if not pattern_matched:
+            raise SecurityError(
+                f"Unauthorized environment variable '{sanitize_log_input(var_name)}' is not in allowlist. "
+                f"Allowed variables: {sorted(ALLOWED_ENV_VARS)} or patterns: {allowed_patterns}"
+            )
+
+
+def _sanitize_env_value(value: str) -> str:
+    """Sanitize environment variable value to prevent injection attacks.
+    
+    Args:
+        value: Raw environment variable value
+        
+    Returns:
+        Sanitized value safe for use in configuration
+    """
+    # Remove any potential YAML injection characters
+    sanitized = value.strip()
+    
+    # Prevent YAML injection by escaping special characters
+    dangerous_chars = ['${', '#{', '&', '*', '!', '|', '>', "'", '"', '`']
+    for char in dangerous_chars:
+        if char in sanitized:
+            # For now, we'll be strict and reject values with dangerous characters
+            # In production, you might want to escape them instead
+            raise SecurityError(
+                f"Environment variable contains potentially dangerous character '{char}'. "
+                "Values with special YAML characters are not allowed for security reasons."
+            )
+    
+    return sanitized
 
 
 class ConfigLoader:
@@ -91,28 +215,58 @@ class ConfigLoader:
         Raises:
             EnvironmentVariableError: If required environment variable is missing
         """
+        missing_vars = []
+        security_errors = []
+        
         def replace_env_var(match: re.Match[str]) -> str:
             var_name = match.group(1)
             default_value = match.group(2)
+            
+            # Security: Validate environment variable name against allowlist
+            try:
+                _validate_env_var_name(var_name)
+            except SecurityError as e:
+                security_errors.append(str(e))
+                return match.group(0)  # Return original placeholder
             
             # Get environment variable value
             env_value = os.getenv(var_name)
             
             if env_value is not None:
-                return env_value
+                # Security: Sanitize environment variable value
+                return _sanitize_env_value(env_value)
             elif default_value is not None:
-                return default_value
+                # Security: Sanitize default value as well
+                return _sanitize_env_value(default_value)
             elif self.require_env_vars:
-                raise EnvironmentVariableError(
-                    f"Required environment variable '{var_name}' is not set"
-                )
+                missing_vars.append(var_name)
+                return match.group(0)  # Return original placeholder for now
             else:
                 # Return original placeholder if not requiring env vars
                 return match.group(0)
         
         try:
-            return self.ENV_VAR_PATTERN.sub(replace_env_var, content)
-        except EnvironmentVariableError:
+            result = self.ENV_VAR_PATTERN.sub(replace_env_var, content)
+            
+            # Check for any security errors first
+            if security_errors:
+                raise SecurityError(f"Security validation failed: {'; '.join(security_errors)}")
+            
+            # Check for missing variables
+            if missing_vars:
+                if len(missing_vars) == 1:
+                    raise EnvironmentVariableError(
+                        f"Required environment variable '{missing_vars[0]}' is not set"
+                    )
+                else:
+                    sorted_vars = sorted(missing_vars)
+                    raise EnvironmentVariableError(
+                        f"Required environment variables are not set: {', '.join(sorted_vars)}"
+                    )
+            
+            return result
+            
+        except (EnvironmentVariableError, SecurityError):
             raise
         except Exception as e:
             raise EnvironmentVariableError(f"Failed to substitute environment variables: {e}") from e
