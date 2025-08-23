@@ -1,4 +1,4 @@
-"""Enhanced state management with drift detection and managed resource tracking."""
+"""Enhanced state management with managed resource tracking."""
 
 import hashlib
 import json
@@ -29,7 +29,6 @@ class ManagementStatus(str, Enum):
     SYNC_MANAGED = "sync_managed"      # Created and managed by sync
     SYNC_MODIFIED = "sync_modified"    # Modified by sync but not created
     EXTERNAL = "external"              # Created externally, not managed
-    DRIFT_DETECTED = "drift_detected"  # Was managed but has external changes
 
 
 class ManagedResource(BaseModel):

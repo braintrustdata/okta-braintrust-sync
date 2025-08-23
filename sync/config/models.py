@@ -88,7 +88,7 @@ class SyncConfig(BaseModel):
     # State management configuration
     state_management: StateManagementConfig = Field(
         default_factory=StateManagementConfig,
-        description="State management and drift detection configuration"
+        description="State management configuration"
     )
     
     @model_validator(mode='after')

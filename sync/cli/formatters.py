@@ -528,7 +528,6 @@ class ProgressFormatter:
             "initializing": "blue",
             "users": "cyan",
             "groups": "green",
-            "drift_detection": "yellow",
             "finalizing": "orange",
             "completed": "green",
             "failed": "red"
@@ -614,29 +613,6 @@ class StateFormatter:
         
         self.console.print(table)
     
-    def format_drift_warnings(self, warnings: List[Dict[str, Any]]) -> None:
-        """Display drift warnings."""
-        if not warnings:
-            self.console.print("[green]No drift detected[/green]")
-            return
-        
-        table = Table(title="Drift Warnings")
-        table.add_column("Resource Type", style="cyan")
-        table.add_column("Resource ID", style="magenta")
-        table.add_column("Drift Type", style="yellow")
-        table.add_column("Details", style="white")
-        table.add_column("Severity", style="red")
-        
-        for warning in warnings:
-            table.add_row(
-                sanitize_log_input(warning.get("resource_type", "Unknown")),
-                sanitize_log_input(warning.get("resource_id", "Unknown")),
-                sanitize_log_input(warning.get("drift_type", "Unknown")),
-                sanitize_log_input(warning.get("details", "")),
-                sanitize_log_input(warning.get("severity", "warning"))
-            )
-        
-        self.console.print(table)
 
 
 class ConfigFormatter:

@@ -60,7 +60,6 @@ ALLOWED_ENV_VARS: Set[str] = {
     # State Management
     "STATE_DIR",
     "ENABLE_ENHANCED_TRACKING",
-    "ENABLE_DRIFT_DETECTION",
     
     # Security
     "REQUIRE_HTTPS",

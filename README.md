@@ -457,12 +457,6 @@ okta-braintrust-sync apply --config sync-config.yaml --dry-run
 okta-braintrust-sync status --config sync-config.yaml
 ```
 
-### Detect Drift
-
-```bash
-# Detect configuration drift in managed resources
-okta-braintrust-sync drift-detect --config sync-config.yaml
-```
 
 ## Monitoring & Auditing
 
@@ -592,7 +586,7 @@ okta-braintrust-sync apply --config sync-config.yaml
 - **Start Small**: Begin with dev environment and a single team
 - **Test Filters**: Use `plan` command to verify filters before applying
 - **Monitor Logs**: Set up log monitoring for failed operations
-- **Regular Reconciliation**: Run periodic full syncs to catch drift
+- **Regular Reconciliation**: Run periodic full syncs for consistency
 - **Backup State**: Include state directory in your backup strategy
 
 ### Team Onboarding Workflow
@@ -652,8 +646,6 @@ okta-braintrust-sync status --config sync-config.yaml
 okta-braintrust-sync plan --config sync-config.yaml
 okta-braintrust-sync apply --config sync-config.yaml --auto-approve
 
-# Drift Detection
-okta-braintrust-sync drift-detect --config sync-config.yaml
 
 # Dry Run Testing
 okta-braintrust-sync apply --config sync-config.yaml --dry-run

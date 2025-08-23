@@ -312,72 +312,12 @@ def status(
         state_summary = state_manager.get_managed_resource_summary()
         formatter.format_state_summary(state_summary)
         
-        # Display drift warnings if any
-        if hasattr(current_state, 'drift_warnings') and current_state.drift_warnings:
-            warnings_data = [w.model_dump() for w in current_state.drift_warnings]
-            formatter.format_drift_warnings(warnings_data)
         
     except Exception as e:
         console.print(f"[red]Failed to get status: {sanitize_log_input(str(e))}[/red]")
         raise typer.Exit(1)
 
 
-@app.command()
-def drift_detect(
-    config_file: Optional[Path] = typer.Option(
-        None, "--config", "-c", help="Path to configuration file"
-    ),
-) -> None:
-    """Detect configuration drift in managed resources."""
-    
-    async def run_drift_detection():
-        config = load_configuration(config_file)
-        
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            # Setup
-            progress.add_task("Setting up drift detection...", total=None)
-            try:
-                braintrust_clients = ClientFactory.create_braintrust_clients(config)
-                state_manager = ComponentFactory.create_state_manager(config)
-            except Exception as e:
-                console.print(f"[red]Setup failed: {sanitize_log_input(str(e))}[/red]")
-                raise typer.Exit(1)
-            
-            # Run drift detection for each org
-            all_warnings = []
-            for org_name, client in braintrust_clients.items():
-                progress.add_task(f"Checking drift for {org_name}...", total=None)
-                try:
-                    current_roles = await client.list_roles()
-                    current_acls = await client.list_org_acls(org_name=org_name, object_type="project")
-                    
-                    warnings = state_manager.detect_drift(current_roles, current_acls, org_name)
-                    all_warnings.extend(warnings)
-                    
-                except Exception as e:
-                    console.print(f"[yellow]Warning: Drift detection failed for {org_name}: {sanitize_log_input(str(e))}[/yellow]")
-        
-        # Display results
-        formatter = StateFormatter(console)
-        warnings_data = [w.model_dump() for w in all_warnings]
-        formatter.format_drift_warnings(warnings_data)
-        
-        if all_warnings:
-            console.print(f"[yellow]Found {len(all_warnings)} drift warnings[/yellow]")
-        else:
-            console.print("[green]✓ No drift detected[/green]")
-    
-    try:
-        asyncio.run(run_drift_detection())
-    except typer.Exit:
-        raise
-    except Exception as e:
-        console.print(f"[red]Drift detection failed: {sanitize_log_input(str(e))}[/red]")
-        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

@@ -38,33 +38,19 @@ class AuditConfig(BaseModel):
 
 
 class StateManagementConfig(BaseModel):
-    """State management and drift detection configuration."""
+    """State management configuration."""
     
     enable_enhanced_tracking: bool = Field(
         True,
-        description="Enable enhanced state tracking with drift detection"
+        description="Enable enhanced state tracking"
     )
     state_directory: Path = Field(
         Path("./state"),
         description="Directory to store state files"
     )
-    enable_drift_detection: bool = Field(
-        True,
-        description="Enable drift detection after sync operations"
-    )
-    drift_detection_interval_hours: int = Field(
-        24,
-        description="Hours between automatic drift detection runs",
-        ge=1
-    )
     max_state_retention_days: int = Field(
         30,
         description="Maximum number of days to retain old state files",
-        ge=1
-    )
-    max_drift_warnings: int = Field(
-        100,
-        description="Maximum number of drift warnings to store per state",
         ge=1
     )
     enable_state_backup: bool = Field(
