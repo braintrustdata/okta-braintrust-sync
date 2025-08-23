@@ -98,12 +98,25 @@ def _validate_env_var_name(var_name: str) -> None:
             "and cannot start with a digit."
         )
     
-    # Then check against allowlist
+    # Then check against allowlist or allowed patterns
     if var_name not in ALLOWED_ENV_VARS:
-        raise SecurityError(
-            f"Unauthorized environment variable '{sanitize_log_input(var_name)}' is not in allowlist. "
-            f"Allowed variables: {sorted(ALLOWED_ENV_VARS)}"
-        )
+        # Check if it matches allowed patterns
+        import re
+        allowed_patterns = [
+            r'^BRAINTRUST_[A-Z0-9_]+_API_KEY$',  # BRAINTRUST_*_API_KEY pattern
+        ]
+        
+        pattern_matched = False
+        for pattern in allowed_patterns:
+            if re.match(pattern, var_name):
+                pattern_matched = True
+                break
+        
+        if not pattern_matched:
+            raise SecurityError(
+                f"Unauthorized environment variable '{sanitize_log_input(var_name)}' is not in allowlist. "
+                f"Allowed variables: {sorted(ALLOWED_ENV_VARS)} or patterns: {allowed_patterns}"
+            )
 
 
 def _sanitize_env_value(value: str) -> str:

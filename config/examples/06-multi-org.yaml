@@ -1,0 +1,185 @@
+# Multi-Organization Example
+# Different sync rules for production and development environments
+
+# Okta API configuration
+okta:
+  domain: "${OKTA_ORG_NAME}.okta.com"
+  api_token: "${OKTA_API_TOKEN}"
+  rate_limit_per_minute: 600
+  timeout_seconds: 30
+
+# Multiple Braintrust organizations
+braintrust_orgs:
+  production:
+    api_key: "${BRAINTRUST_PROD_API_KEY}"
+    url: "https://api.braintrust.dev"
+    timeout_seconds: 30
+    rate_limit_per_minute: 300
+  
+  development:
+    api_key: "${BRAINTRUST_DEV_API_KEY}"
+    url: "https://api.braintrust.dev"
+    timeout_seconds: 30
+    rate_limit_per_minute: 300
+  
+  staging:
+    api_key: "${BRAINTRUST_STAGING_API_KEY}"
+    url: "https://api.braintrust.dev"
+    timeout_seconds: 30
+    rate_limit_per_minute: 300
+
+# User sync rules per environment
+sync_rules:
+  users:
+    enabled: true
+    identity_mapping:
+      strategy: "email"
+      case_sensitive: false
+    
+    create_missing: true
+    update_existing: true
+    sync_profile_fields: ["firstName", "lastName", "email", "login"]
+    
+    mappings:
+      # All active users go to dev and staging
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["development", "staging"]
+        enabled: true
+      
+      # Only employees (not contractors) go to production
+      - okta_filter: 'status eq "ACTIVE" and profile.employeeType eq "Employee"'
+        braintrust_orgs: ["production"]
+        enabled: true
+  
+  groups:
+    enabled: false
+
+# Different group assignment per org
+group_assignment:
+  global_config:
+    strategy: "okta_groups"
+    
+    okta_group_mappings:
+      - okta_group_name: "BT-Engineering"
+        braintrust_group_name: "Engineering"
+      - okta_group_name: "BT-DataScience"
+        braintrust_group_name: "DataScience"
+      - okta_group_name: "BT-ProductManagement"
+        braintrust_group_name: "ProductManagement"
+      - okta_group_name: "BT-QA"
+        braintrust_group_name: "QA"
+    
+    sync_group_names: true
+    auto_create_groups: true
+    default_groups: ["AllEmployees"]
+  
+  # Organization-specific overrides
+  org_configs:
+    # Production is more restrictive
+    - braintrust_org: "production"
+      enabled: true
+      group_assignment_config:
+        strategy: "okta_groups"
+        
+        okta_group_mappings:
+          - okta_group_name: "BT-Engineering"
+            braintrust_group_name: "Engineering"
+          - okta_group_name: "BT-ProductManagement"
+            braintrust_group_name: "ProductManagement"
+          # Note: DataScience group not available in production
+        
+        sync_group_names: true
+        auto_create_groups: false  # Don't auto-create in prod
+        default_groups: []  # No default groups in prod
+
+# Role-project assignment with per-org differences
+role_project_assignment:
+  global_config:
+    standard_roles:
+      - name: "Developer"
+        description: "Standard development access"
+        member_permissions:
+          - permission: "create"
+            restrict_object_type: null
+          - permission: "read"
+            restrict_object_type: null
+          - permission: "update"
+            restrict_object_type: null
+          - permission: "delete"
+            restrict_object_type: null
+      
+      - name: "Viewer"
+        description: "Read-only access"
+        member_permissions:
+          - permission: "read"
+            restrict_object_type: null
+    
+    group_assignments:
+      # Engineering gets Developer role on all projects in dev/staging
+      - group_name: "Engineering"
+        role_name: "Developer"
+        project_match:
+          all_projects: true
+        enabled: true
+        priority: 50
+    
+    auto_create_roles: true
+    remove_unmanaged_acls: false
+  
+  # Production-specific role assignments
+  org_configs:
+    - braintrust_org: "production"
+      enabled: true
+      role_project_config:
+        standard_roles:
+          - name: "ProdViewer"
+            description: "Production read-only access"
+            member_permissions:
+              - permission: "read"
+                restrict_object_type: null
+        
+        group_assignments:
+          # Only viewers allowed in production
+          - group_name: "Engineering"
+            role_name: "ProdViewer"
+            project_match:
+              all_projects: true
+            enabled: true
+            priority: 50
+          
+          - group_name: "ProductManagement"
+            role_name: "ProdViewer"
+            project_match:
+              all_projects: true
+            enabled: true
+            priority: 50
+        
+        auto_create_roles: true
+        remove_unmanaged_acls: false
+
+# Sync mode
+sync_modes:
+  declarative:
+    enabled: true
+    schedule: "0 */2 * * *"  # Every 2 hours
+    full_reconciliation: "0 3 * * *"  # Daily at 3 AM
+    max_concurrent_orgs: 3  # Process all orgs in parallel
+  
+  realtime:
+    enabled: false
+
+# Sync options
+sync_options:
+  dry_run: false
+  batch_size: 50
+  max_retries: 3
+  retry_delay_seconds: 1.0
+  remove_extra: false
+  continue_on_error: true
+
+# Audit logging
+audit:
+  enabled: true
+  log_level: "INFO"
+  log_format: "json"
+  retention_days: 90  # Longer retention for production

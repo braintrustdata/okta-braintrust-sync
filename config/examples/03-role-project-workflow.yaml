@@ -1,0 +1,181 @@
+# Role-Project Assignment Example
+# Shows Groups → Roles → Projects workflow for granular permissions
+
+# Okta API configuration
+okta:
+  domain: "${OKTA_ORG_NAME}.okta.com"
+  api_token: "${OKTA_API_TOKEN}"
+  rate_limit_per_minute: 600
+  timeout_seconds: 30
+
+# Braintrust organizations
+braintrust_orgs:
+  main:
+    api_key: "${BRAINTRUST_PROD_API_KEY}"
+    url: "https://api.braintrust.dev"
+    timeout_seconds: 30
+    rate_limit_per_minute: 300
+
+# User and group sync
+sync_rules:
+  users:
+    enabled: true
+    mappings:
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["main"]
+        enabled: true
+    
+    identity_mapping:
+      strategy: "email"
+      case_sensitive: false
+    
+    create_missing: true
+    update_existing: true
+    sync_profile_fields: ["firstName", "lastName", "email", "login"]
+  
+  groups:
+    enabled: false  # Groups created via group assignment
+
+# Group assignment based on Okta groups
+group_assignment:
+  global_config:
+    strategy: "okta_groups"
+    
+    okta_group_mappings:
+      - okta_group_name: "BT-Engineering"
+        braintrust_group_name: "BT-Engineering"
+      - okta_group_name: "BT-DataScience"
+        braintrust_group_name: "BT-DataScience"
+      - okta_group_name: "BT-Managers"
+        braintrust_group_name: "BT-Managers"
+      - okta_group_name: "BT-AllEmployees"
+        braintrust_group_name: "BT-AllEmployees"
+    
+    sync_group_names: true
+    auto_create_groups: true
+
+# Role-project assignment workflow
+role_project_assignment:
+  global_config:
+    # Define standard roles
+    standard_roles:
+      - name: "Manager"
+        description: "Management role with project oversight"
+        member_permissions:
+          - permission: "create"
+            restrict_object_type: null
+          - permission: "read"
+            restrict_object_type: null
+          - permission: "update"
+            restrict_object_type: null
+          - permission: "delete"
+            restrict_object_type: null
+          - permission: "create_acls"
+            restrict_object_type: "project"
+          - permission: "read_acls"
+            restrict_object_type: "project"
+          - permission: "update_acls"
+            restrict_object_type: "project"
+      
+      - name: "Engineer"
+        description: "Engineering role with full development access"
+        member_permissions:
+          - permission: "create"
+            restrict_object_type: null
+          - permission: "read"
+            restrict_object_type: null
+          - permission: "update"
+            restrict_object_type: null
+          - permission: "delete"
+            restrict_object_type: null
+      
+      - name: "DataScientist"
+        description: "Data science role for research and experimentation"
+        member_permissions:
+          - permission: "read"
+            restrict_object_type: null
+          - permission: "create"
+            restrict_object_type: "experiment"
+          - permission: "create"
+            restrict_object_type: "dataset"
+          - permission: "update"
+            restrict_object_type: "experiment"
+          - permission: "update"
+            restrict_object_type: "dataset"
+          - permission: "delete"
+            restrict_object_type: "experiment"
+          - permission: "delete"
+            restrict_object_type: "dataset"
+      
+      - name: "Employee"
+        description: "Basic employee role with read access"
+        member_permissions:
+          - permission: "read"
+            restrict_object_type: null
+    
+    auto_create_roles: true
+    update_existing_roles: false
+    
+    # Assign groups to roles on projects
+    group_assignments:
+      # Managers get Manager role on all projects
+      - group_name: "BT-Managers"
+        role_name: "Manager"
+        project_match:
+          all_projects: true
+        enabled: true
+        priority: 100
+      
+      # Engineering gets Engineer role on development projects
+      - group_name: "BT-Engineering"
+        role_name: "Engineer"
+        project_match:
+          name_contains: ["api", "service", "web", "mobile", "dev"]
+        enabled: true
+        priority: 50
+      
+      # Data science gets DataScientist role on research projects
+      - group_name: "BT-DataScience"
+        role_name: "DataScientist"
+        project_match:
+          name_contains: ["research", "experiment", "data", "analytics"]
+        enabled: true
+        priority: 50
+      
+      # All employees get Employee role on shared projects
+      - group_name: "BT-AllEmployees"
+        role_name: "Employee"
+        project_match:
+          name_contains: ["shared", "company", "demo"]
+        enabled: true
+        priority: 10
+    
+    remove_unmanaged_acls: false
+    dry_run: false
+
+# Sync mode
+sync_modes:
+  declarative:
+    enabled: true
+    schedule: "0 */2 * * *"  # Every 2 hours
+    full_reconciliation: "0 1 * * *"  # Daily at 1 AM
+    max_concurrent_orgs: 1
+  
+  realtime:
+    enabled: false
+
+# Sync options
+sync_options:
+  dry_run: false
+  batch_size: 50
+  max_retries: 3
+  retry_delay_seconds: 1.0
+  remove_extra: false
+  continue_on_error: true
+
+# Audit logging
+audit:
+  enabled: true
+  log_level: "INFO"
+  log_format: "json"
+  retention_days: 30

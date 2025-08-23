@@ -1,0 +1,113 @@
+# Hybrid Group Assignment Example
+# Combines Okta groups and attribute-based assignment
+
+# Okta API configuration
+okta:
+  domain: "${OKTA_ORG_NAME}.okta.com"
+  api_token: "${OKTA_API_TOKEN}"
+  rate_limit_per_minute: 600
+  timeout_seconds: 30
+
+# Braintrust organizations
+braintrust_orgs:
+  main:
+    api_key: "${BRAINTRUST_PROD_API_KEY}"
+    url: "https://api.braintrust.dev"
+    timeout_seconds: 30
+    rate_limit_per_minute: 300
+
+# User sync
+sync_rules:
+  users:
+    enabled: true
+    mappings:
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["main"]
+        enabled: true
+    
+    identity_mapping:
+      strategy: "email"
+      case_sensitive: false
+    
+    create_missing: true
+    update_existing: true
+    sync_profile_fields: ["firstName", "lastName", "email", "login", "department", "title"]
+  
+  groups:
+    enabled: false
+
+# Hybrid group assignment (both Okta groups and attributes)
+group_assignment:
+  global_config:
+    strategy: "hybrid"
+    hybrid_mode: "merge"  # Combine both strategies
+    
+    # Primary assignment via Okta groups
+    okta_group_mappings:
+      - okta_group_name: "BT-Engineering"
+        braintrust_group_name: "Engineering"
+      - okta_group_name: "BT-DataScience"
+        braintrust_group_name: "DataScience"
+      - okta_group_name: "BT-ProductManagement"
+        braintrust_group_name: "ProductManagement"
+    
+    # Additional assignment via attributes (for special cases)
+    attribute_mappings:
+      # Contractors get special group regardless of department
+      - rule:
+          conditions:
+            - attribute: "employeeType"
+              operator: "equals"
+              value: "Contractor"
+        braintrust_group_name: "Contractors"
+        priority: 80
+      
+      # Senior staff get additional access
+      - rule:
+          conditions:
+            - attribute: "title"
+              operator: "regex"
+              value: "(Senior|Principal|Staff|Director|VP)"
+              case_sensitive: false
+        braintrust_group_name: "SeniorStaff"
+        priority: 70
+      
+      # Cross-functional teams
+      - rule:
+          conditions:
+            - attribute: "customAttributes.team"
+              operator: "equals"
+              value: "Platform"
+        braintrust_group_name: "PlatformTeam"
+        priority: 60
+    
+    sync_group_names: true
+    auto_create_groups: true
+    default_groups: ["AllEmployees"]
+    max_groups_per_user: 15
+
+# Sync mode
+sync_modes:
+  declarative:
+    enabled: true
+    schedule: "0 */3 * * *"  # Every 3 hours
+    max_concurrent_orgs: 1
+  
+  realtime:
+    enabled: false
+
+# Sync options
+sync_options:
+  dry_run: false
+  batch_size: 50
+  max_retries: 3
+  retry_delay_seconds: 1.0
+  remove_extra: false
+  continue_on_error: true
+
+# Audit logging
+audit:
+  enabled: true
+  log_level: "INFO" 
+  log_format: "json"
+  retention_days: 30

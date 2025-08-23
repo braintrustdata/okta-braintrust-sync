@@ -1,0 +1,75 @@
+# Basic Okta-Braintrust Sync Configuration
+# Simple user and group synchronization
+
+# Okta API configuration
+okta:
+  domain: "${OKTA_ORG_NAME}.okta.com"
+  api_token: "${OKTA_API_TOKEN}"
+  rate_limit_per_minute: 600
+  timeout_seconds: 30
+
+# Braintrust organizations to sync to
+braintrust_orgs:
+  main:
+    api_key: "${BRAINTRUST_PROD_API_KEY}"
+    url: "https://api.braintrust.dev"
+    timeout_seconds: 30
+    rate_limit_per_minute: 300
+
+# Sync rules - what to synchronize
+sync_rules:
+  users:
+    enabled: true
+    mappings:
+      - okta_filter: 'status eq "ACTIVE"'
+        braintrust_orgs: ["main"]
+        enabled: true
+    
+    identity_mapping:
+      strategy: "email"
+      case_sensitive: false
+    
+    create_missing: true
+    update_existing: true
+    sync_profile_fields: ["firstName", "lastName", "email", "login"]
+  
+  groups:
+    enabled: true
+    mappings:
+      - okta_group_filter: 'type eq "OKTA_GROUP"'
+        braintrust_orgs: ["main"]
+        name_transform: "{group.name}"
+        enabled: true
+    
+    create_missing: true
+    update_existing: true
+    sync_members: true
+    sync_description: true
+
+# Sync mode - declarative only (realtime not implemented)
+sync_modes:
+  declarative:
+    enabled: true
+    schedule: "0 */6 * * *"  # Every 6 hours
+    full_reconciliation: "0 2 * * 0"  # Weekly on Sunday at 2 AM
+    max_concurrent_orgs: 1
+  
+  realtime:
+    enabled: false
+
+# Sync options
+sync_options:
+  dry_run: false
+  batch_size: 50
+  max_retries: 3
+  retry_delay_seconds: 1.0
+  remove_extra: false
+  continue_on_error: true
+
+# Audit logging
+audit:
+  enabled: true
+  log_level: "INFO"
+  log_format: "json"
+  retention_days: 30
+  include_sensitive_data: false
