@@ -219,12 +219,14 @@ Map users based on their Okta group memberships:
 group_assignment:
   global_config:
     strategy: "okta_groups"
-    okta_group_mappings:
-      - okta_group_name: "BT-Engineering"
-        braintrust_group_name: "Engineering"
-      - okta_group_name: "BT-DataScience" 
-        braintrust_group_name: "DataScience"
-    sync_group_names: true  # Use same names as Okta
+    sync_group_names: true  # Use same names as Okta groups
+    
+    # Optional: explicit mappings (if not using sync_group_names)
+    # okta_group_mappings:
+    #   - okta_group_name: "BT-Engineering"
+    #     braintrust_group_name: "BT-Engineering"
+    #   - okta_group_name: "BT-DataScience"
+    #     braintrust_group_name: "BT-DataScience"
 ```
 
 ### Strategy 2: Attributes (`attributes`)
