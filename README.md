@@ -2,9 +2,12 @@
 
 **Automated team onboarding and permission management for GenAI Platform teams**
 
+> **⚠️ WARNING: This tool has been tested on small Okta environments only. Before using in production, thoroughly test the sync process on a staging Braintrust organization to ensure it works correctly with your specific configuration and scale.**
+
 Sync your organization's teams from Okta groups to Braintrust organizations automatically, eliminating manual account creation and permission management.
 
 ## Overview
+This tool provides comprehensive synchronization capabilities between Okta and Braintrust, handling everything from user provisioning to complex role-based access control configurations. **It is recommended to test thoroughly in non-production environments before deploying to production.**
 
 This tool helps GenAI Platform teams automate the process of:
 - **🏢 Team Onboarding**: Bulk sync entire teams from Okta groups to Braintrust organizations
@@ -52,27 +55,9 @@ The tool provides comprehensive user and group synchronization with advanced rol
 - ✅ **User Sync**: Creates and manages user accounts in Braintrust organizations
 - ✅ **Group Sync**: Synchronizes groups with proper state management
 - ✅ **Role-Project Assignment**: Creates 50+ ACL assignments using Groups → Roles → Projects workflow
-- ✅ **State persistence**: All resource mappings saved and managed correctly
 - ✅ **ACL Execution**: Fixed executor now properly creates planned ACL items in Braintrust
 - ✅ **Audit logging**: Complete audit trails generated for all operations
 - ✅ **End-to-end automation**: Complete plan → apply → audit cycle with no manual steps
-
-### Why This Tool?
-
-**Before**: Manual team onboarding
-- IT creates individual Braintrust accounts
-- Manually adds users to appropriate groups
-- Tracks permission changes in spreadsheets
-- Reactive access management
-
-**After**: Fully automated sync from Okta
-- New team members automatically get Braintrust accounts created
-- Users are automatically assigned to appropriate groups based on configurable strategies
-- Group memberships stay in sync with Okta changes
-- Advanced role-project assignment creates granular permissions (Groups → Roles → Projects)
-- Users removed from Okta can be automatically removed from Braintrust (configurable)
-- All changes are audited and traceable
-- Proactive, policy-driven access management
 
 ## Quick Start
 
